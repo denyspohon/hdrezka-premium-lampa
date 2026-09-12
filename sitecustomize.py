@@ -1,91 +1,95 @@
 import re
 
-# Compatibility patch for hdrezka==5.2.0 search parsing.
-# Current Rezka result rows may contain more than 3 comma-separated fields:
-# year, country, several genres.
+# HDREZKA Premium search compatibility patch.
+# Uses Rezka's live-search endpoint directly instead of the library's
+# full search page parser, which currently returns empty results on some mirrors.
+
 try:
-    from hdrezka.post.page import Page
+    from bs4 import BeautifulSoup
+    from hdrezka.api.search import Search
     from hdrezka.post.inline import InlineItem, InlineInfo
 
-    def _parse_items_fixed(self, soup):
-        result = []
+    async def _get_page_quick(self, page=1, **kwargs):
+        if page not in (None, 1):
+            return []
 
-        for item in soup.find_all(class_='b-content__inline_item'):
-            link = item.find(class_='b-content__inline_item-link')
+        url = self.client.host_join('engine/ajax/search.php')
 
-            if not link:
-                continue
+        response = await self.client.get_response(
+            'GET',
+            url,
+            params={'q': self.query},
+            headers={
+                'Referer': self.client.host,
+                'X-Requested-With': 'XMLHttpRequest',
+            },
+        )
 
-            anchor = link.find('a', href=True)
+        response.raise_for_status()
 
+        html = response.text or ''
+        soup = BeautifulSoup(html, 'html.parser')
+
+        rows = []
+        seen = set()
+
+        selectors = [
+            'div.b-search__live_section ul li',
+            '.b-search__live_section li',
+            'li',
+        ]
+
+        nodes = []
+        for selector in selectors:
+            nodes = soup.select(selector)
+            if nodes:
+                break
+
+        for node in nodes:
+            anchor = node.find('a', href=True)
             if not anchor:
                 continue
 
-            info_node = link.find('div')
-            info_text = (
-                info_node.get_text(' ', strip=True)
-                if info_node
-                else ''
+            href = (anchor.get('href') or '').strip()
+            if not href or href in seen:
+                continue
+
+            if '/search/' in href:
+                continue
+
+            seen.add(href)
+
+            title_node = anchor.select_one('.enty')
+            title = (
+                title_node.get_text(' ', strip=True)
+                if title_node
+                else anchor.get_text(' ', strip=True)
             )
 
-            parts = [
-                part.strip()
-                for part in info_text.split(',')
-                if part.strip()
-            ]
+            full_text = anchor.get_text(' ', strip=True)
+            year_match = re.search(r'\b((?:19|20)\d{2})\b', full_text)
+            year = int(year_match.group(1)) if year_match else 0
 
-            years = parts[0] if parts else ''
-            country = parts[1] if len(parts) > 1 else ''
-            genre = ', '.join(parts[2:]) if len(parts) > 2 else ''
-
-            try:
-                info = self._inline_info(
-                    years,
-                    country,
-                    genre
-                )
-            except Exception:
-                match = re.search(
-                    r'\b((?:19|20)\d{2})\b',
-                    info_text
-                )
-
-                year = int(match.group(1)) if match else 0
-
-                info = InlineInfo(
-                    year,
-                    None,
-                    country,
-                    genre
-                )
-
-            cover = item.find(
-                class_='b-content__inline_item-cover'
-            )
-
-            image = cover.find('img') if cover else None
-            poster = image.get('src', '') if image else ''
-
-            result.append(
+            rows.append(
                 InlineItem(
-                    anchor['href'],
-                    anchor.get_text(' ', strip=True),
-                    info,
-                    poster,
-                    self.client
+                    href,
+                    title,
+                    InlineInfo(year, None, '', ''),
+                    '',
+                    self.client,
                 )
             )
 
-        return result
+        print(
+            f'[hdrezka-premium] quick-search '
+            f'query={self.query!r} status={response.status_code} results={len(rows)}'
+        )
 
-    Page._parse_items = _parse_items_fixed
+        return rows
 
-    print(
-        '[hdrezka-premium] search parser compatibility patch loaded'
-    )
+    Search.get_page = _get_page_quick
+
+    print('[hdrezka-premium] quick-search patch loaded')
 
 except Exception as exc:
-    print(
-        '[hdrezka-premium] failed to load search parser patch:',
-        exc
-    )
+    print('[hdrezka-premium] quick-search patch failed:', repr(exc))
