@@ -5,14 +5,21 @@
   window.hdrezka_premium_lampa_ready = true;
 
   var API = '__API_BASE__';
-  var VERSION = '1.0.0';
+  var VERSION = '2.0.0';
+  var AUTHOR = 'DENYS';
+  var EDITION = 'DENYS EDITION';
   var COMPONENT = 'hdrezka_premium';
 
   var STORAGE = {
     login: 'hdrezka_premium_login',
     password: 'hdrezka_premium_password',
     session: 'hdrezka_premium_session',
-    host: 'hdrezka_premium_host'
+    host: 'hdrezka_premium_host',
+    quality: 'hdrezka_premium_quality',
+    rememberVoice: 'hdrezka_premium_remember_voice',
+    continueMode: 'hdrezka_premium_continue',
+    preferences: 'hdrezka_premium_preferences',
+    progress: 'hdrezka_premium_progress'
   };
 
   function notice(text) {
@@ -29,6 +36,105 @@
 
   function setValue(key, val) {
     Lampa.Storage.set(key, val);
+  }
+
+  function readJson(key) {
+    var raw = value(key);
+
+    if (!raw) return {};
+
+    try {
+      var parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function writeJson(key, data) {
+    try {
+      setValue(
+        key,
+        JSON.stringify(data || {})
+      );
+    } catch (e) {}
+  }
+
+  function setting(key, fallback) {
+    var current = value(key);
+    return current === '' ? fallback : current;
+  }
+
+  function wakeStatus(text) {
+    try {
+      $('.hdrezka-denys-brand__status').text(text);
+    } catch (e) {}
+  }
+
+  function qualityLabel() {
+    var q = setting(STORAGE.quality, 'max');
+    return q === 'max' ? 'MAX' : q + 'p';
+  }
+
+  function pickQuality(data) {
+    if (!data) return '';
+
+    var preferred = setting(STORAGE.quality, 'max');
+    var quality = data.quality || {};
+
+    if (
+      preferred === 'max' ||
+      !quality ||
+      typeof quality !== 'object'
+    ) {
+      return data.url || '';
+    }
+
+    var target = parseInt(preferred, 10);
+
+    if (!target) {
+      return data.url || '';
+    }
+
+    var rows = [];
+
+    Object.keys(quality).forEach(
+      function (key) {
+        var number = parseInt(key, 10);
+
+        if (
+          number &&
+          quality[key]
+        ) {
+          rows.push({
+            number: number,
+            url: quality[key]
+          });
+        }
+      }
+    );
+
+    if (!rows.length) {
+      return data.url || '';
+    }
+
+    rows.sort(function (a, b) {
+      return a.number - b.number;
+    });
+
+    var chosen = null;
+
+    rows.forEach(function (row) {
+      if (row.number <= target) {
+        chosen = row;
+      }
+    });
+
+    if (!chosen) {
+      chosen = rows[0];
+    }
+
+    return chosen.url || data.url || '';
   }
 
   function yearFromMovie(movie) {
@@ -63,7 +169,24 @@
     );
   }
 
-  function rawPost(path, data) {
+  function rawPost(path, data, attempt) {
+    attempt = attempt || 0;
+
+    var wakeTimer = setTimeout(
+      function () {
+        wakeStatus(
+          '● Сервер просыпается…'
+        );
+
+        if (attempt === 0) {
+          notice(
+            'HDREZKA: сервер просыпается, подождите…'
+          );
+        }
+      },
+      2500
+    );
+
     return fetch(
       API + path,
       {
@@ -76,36 +199,100 @@
           data || {}
         )
       }
-    ).then(function (response) {
-      return response
-        .text()
-        .then(function (text) {
-          var json = null;
+    )
+      .then(function (response) {
+        clearTimeout(wakeTimer);
 
-          try {
-            json = JSON.parse(text);
-          } catch (e) {}
+        return response
+          .text()
+          .then(function (text) {
+            var json = null;
 
-          if (!response.ok) {
-            throw new Error(
-              (
-                json &&
-                json.detail
-              ) ||
-              (
-                json &&
-                json.error
-              ) ||
-              (
-                'HTTP ' +
-                response.status
-              )
+            try {
+              json = JSON.parse(text);
+            } catch (e) {}
+
+            if (!response.ok) {
+              var error = new Error(
+                (
+                  json &&
+                  json.detail
+                ) ||
+                (
+                  json &&
+                  json.error
+                ) ||
+                (
+                  'HTTP ' +
+                  response.status
+                )
+              );
+
+              error.status =
+                response.status;
+
+              throw error;
+            }
+
+            wakeStatus(
+              '● Сервер online'
             );
-          }
 
-          return json;
-        });
-    });
+            return json;
+          });
+      })
+      .catch(function (error) {
+        clearTimeout(wakeTimer);
+
+        var status =
+          error &&
+          error.status
+            ? error.status
+            : 0;
+
+        var retryable =
+          !status ||
+          status === 408 ||
+          status === 429 ||
+          status === 500 ||
+          status === 502 ||
+          status === 503 ||
+          status === 504;
+
+        if (
+          retryable &&
+          attempt < 2
+        ) {
+          wakeStatus(
+            '● Повтор подключения…'
+          );
+
+          return new Promise(
+            function (resolve) {
+              setTimeout(
+                resolve,
+                attempt === 0
+                  ? 1500
+                  : 3000
+              );
+            }
+          ).then(
+            function () {
+              return rawPost(
+                path,
+                data,
+                attempt + 1
+              );
+            }
+          );
+        }
+
+        wakeStatus(
+          '● Ошибка соединения'
+        );
+
+        throw error;
+      });
   }
 
   function login() {
@@ -124,7 +311,7 @@
     }
 
     notice(
-      'HDREZKA: вход в аккаунт...'
+      'HDREZKA Premium by DENYS: вход в аккаунт…'
     );
 
     return rawPost(
@@ -153,8 +340,19 @@
         data.host || ''
       );
 
+      wakeStatus(
+        '● Аккаунт подключён · ' +
+        (
+          data.host ||
+          value(STORAGE.host) ||
+          'HDRezka'
+        )
+          .replace('https://', '')
+          .replace(/\/$/, '')
+      );
+
       notice(
-        '✅ HDREZKA: аккаунт авторизован'
+        '✅ HDREZKA Premium: аккаунт авторизован'
       );
 
       return data.session;
@@ -235,7 +433,7 @@
           'hdrezka_premium_settings',
 
         name:
-          'HDREZKA Premium',
+          'HDREZKA Premium • by DENYS',
 
         icon:
           '<svg width="24" height="24" viewBox="0 0 24 24">' +
@@ -265,7 +463,7 @@
           'Логин / E-mail HDRezka',
 
         description:
-          'Ваш аккаунт HDRezka'
+          'DENYS EDITION • ваш аккаунт HDRezka'
       },
 
       onChange:
@@ -315,6 +513,114 @@
 
       param: {
         name:
+          STORAGE.quality,
+        type:
+          'select',
+        values: {
+          'max': 'Максимальное',
+          '2160': 'До 2160p',
+          '1080': 'До 1080p',
+          '720': 'До 720p',
+          '480': 'До 480p'
+        },
+        default:
+          'max'
+      },
+
+      field: {
+        name:
+          'Качество по умолчанию',
+
+        description:
+          'Плеер всё равно получает весь список качеств'
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
+          STORAGE.rememberVoice,
+        type:
+          'select',
+        values: {
+          '1': 'Да',
+          '0': 'Нет'
+        },
+        default:
+          '1'
+      },
+
+      field: {
+        name:
+          'Запоминать озвучку',
+
+        description:
+          'Для каждого фильма и сериала отдельно'
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
+          STORAGE.continueMode,
+        type:
+          'select',
+        values: {
+          '1': 'Да',
+          '0': 'Нет'
+        },
+        default:
+          '1'
+      },
+
+      field: {
+        name:
+          'Продолжать с последнего сезона',
+
+        description:
+          'Помечает последнюю запущенную серию и возвращает к её сезону'
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
+          'hdrezka_premium_denys_edition',
+        type:
+          'select',
+        values: {
+          'denys':
+            'DENYS EDITION • v' +
+            VERSION
+        },
+        default:
+          'denys'
+      },
+
+      field: {
+        name:
+          'Автор',
+
+        description:
+          'HDREZKA Premium for Lampa • by DENYS'
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
           'hdrezka_premium_server',
         type:
           'input',
@@ -329,9 +635,53 @@
           'Сервер',
 
         description:
-          'Только для проверки. Менять не нужно.'
+          'Backend HDREZKA Premium • by DENYS. Менять не нужно.'
       }
     });
+  }
+
+  function addStyle() {
+    try {
+      if ($('#hdrezka-denys-style').length) {
+        return;
+      }
+
+      var css =
+        '<style id="hdrezka-denys-style">' +
+        '.hdrezka-denys-brand{' +
+          'display:flex;' +
+          'align-items:center;' +
+          'gap:.7em;' +
+          'padding:.65em 1em;' +
+          'margin:0 0 .65em 0;' +
+          'border:1px solid rgba(255,255,255,.16);' +
+          'border-radius:.65em;' +
+          'background:rgba(0,0,0,.14);' +
+        '}' +
+        '.hdrezka-denys-brand__logo{' +
+          'font-size:1.05em;' +
+          'font-weight:700;' +
+          'letter-spacing:.04em;' +
+        '}' +
+        '.hdrezka-denys-brand__edition{' +
+          'opacity:.72;' +
+          'font-size:.86em;' +
+        '}' +
+        '.hdrezka-denys-brand__status{' +
+          'margin-left:auto;' +
+          'opacity:.78;' +
+          'font-size:.82em;' +
+          'white-space:nowrap;' +
+        '}' +
+        '.view--hdrezka-premium span:after{' +
+          'content:" • DENYS";' +
+          'opacity:.58;' +
+          'font-size:.72em;' +
+        '}' +
+        '</style>';
+
+      $('head').append(css);
+    } catch (e) {}
   }
 
   function addTemplates() {
@@ -360,6 +710,23 @@
 
     var filter =
       new Lampa.Filter(object);
+
+    var brand =
+      $(
+        '<div class="hdrezka-denys-brand">' +
+          '<div class="hdrezka-denys-brand__logo">HDREZKA Premium</div>' +
+          '<div class="hdrezka-denys-brand__edition">by DENYS · v' +
+          VERSION +
+          '</div>' +
+          '<div class="hdrezka-denys-brand__status">' +
+          (
+            value(STORAGE.session)
+              ? '● Аккаунт подключён'
+              : '○ Вход при первом запуске'
+          ) +
+          '</div>' +
+        '</div>'
+      );
 
     var details = null;
     var last = null;
@@ -425,6 +792,311 @@
       ];
     }
 
+    function preferenceKey() {
+      if (
+        details &&
+        details.url
+      ) {
+        return details.url;
+      }
+
+      var movie =
+        object.movie || {};
+
+      return (
+        movieTitle(movie) +
+        '|' +
+        (
+          yearFromMovie(movie) ||
+          ''
+        )
+      );
+    }
+
+    function findVoiceIndex(name) {
+      if (
+        !name ||
+        !details ||
+        !details.voices
+      ) {
+        return -1;
+      }
+
+      for (
+        var i = 0;
+        i < details.voices.length;
+        i++
+      ) {
+        if (
+          details.voices[i] &&
+          details.voices[i].name === name
+        ) {
+          return i;
+        }
+      }
+
+      return -1;
+    }
+
+    function findSeasonIndex(id) {
+      if (
+        id === null ||
+        typeof id === 'undefined' ||
+        !details ||
+        !details.seasons
+      ) {
+        return -1;
+      }
+
+      for (
+        var i = 0;
+        i < details.seasons.length;
+        i++
+      ) {
+        if (
+          String(
+            details.seasons[i].id
+          ) ===
+          String(id)
+        ) {
+          return i;
+        }
+      }
+
+      return -1;
+    }
+
+    function savedState() {
+      var key =
+        preferenceKey();
+
+      var preferences =
+        readJson(
+          STORAGE.preferences
+        );
+
+      var progress =
+        readJson(
+          STORAGE.progress
+        );
+
+      return {
+        pref:
+          preferences[key] ||
+          {},
+        progress:
+          progress[key] ||
+          {}
+      };
+    }
+
+    function savePreference() {
+      if (!details) return;
+
+      var key =
+        preferenceKey();
+
+      var preferences =
+        readJson(
+          STORAGE.preferences
+        );
+
+      var current =
+        preferences[key] ||
+        {};
+
+      var voice =
+        currentVoice();
+
+      var season =
+        currentSeason();
+
+      if (
+        setting(
+          STORAGE.rememberVoice,
+          '1'
+        ) === '1' &&
+        voice
+      ) {
+        current.voice =
+          voice.name;
+      }
+
+      if (season) {
+        current.season =
+          season.id;
+      }
+
+      current.updated =
+        Date.now();
+
+      preferences[key] =
+        current;
+
+      writeJson(
+        STORAGE.preferences,
+        preferences
+      );
+    }
+
+    function saveProgress(episode) {
+      if (!details) return;
+
+      savePreference();
+
+      if (
+        !details.is_series ||
+        !episode
+      ) {
+        return;
+      }
+
+      var key =
+        preferenceKey();
+
+      var progress =
+        readJson(
+          STORAGE.progress
+        );
+
+      var voice =
+        currentVoice();
+
+      var season =
+        currentSeason();
+
+      progress[key] = {
+        voice:
+          voice
+            ? voice.name
+            : '',
+        season:
+          season
+            ? season.id
+            : null,
+        episode:
+          episode.episode_id,
+        updated:
+          Date.now()
+      };
+
+      writeJson(
+        STORAGE.progress,
+        progress
+      );
+    }
+
+    function restoreChoice() {
+      if (!details) {
+        return null;
+      }
+
+      var state =
+        savedState();
+
+      var wantedSeason =
+        null;
+
+      if (
+        setting(
+          STORAGE.rememberVoice,
+          '1'
+        ) === '1'
+      ) {
+        var voiceName =
+          (
+            state.progress &&
+            state.progress.voice
+          ) ||
+          (
+            state.pref &&
+            state.pref.voice
+          );
+
+        var voiceIndex =
+          findVoiceIndex(
+            voiceName
+          );
+
+        if (
+          voiceIndex >= 0
+        ) {
+          choice.voice =
+            voiceIndex;
+        }
+      }
+
+      if (
+        setting(
+          STORAGE.continueMode,
+          '1'
+        ) === '1'
+      ) {
+        wantedSeason =
+          (
+            state.progress &&
+            state.progress.season
+          );
+      }
+
+      if (
+        wantedSeason === null ||
+        typeof wantedSeason ===
+          'undefined'
+      ) {
+        wantedSeason =
+          (
+            state.pref &&
+            state.pref.season
+          );
+      }
+
+      return wantedSeason;
+    }
+
+    function applySeason(id) {
+      var index =
+        findSeasonIndex(id);
+
+      if (
+        index >= 0
+      ) {
+        choice.season =
+          index;
+      }
+    }
+
+    function finishDetails(self) {
+      var wantedSeason =
+        restoreChoice();
+
+      var voice =
+        currentVoice();
+
+      if (
+        details &&
+        details.is_series &&
+        voice &&
+        String(voice.id) !==
+          String(
+            details.default_voice_id
+          )
+      ) {
+        self.loadEpisodes(
+          voice,
+          wantedSeason
+        );
+        return;
+      }
+
+      applySeason(
+        wantedSeason
+      );
+
+      self.renderFilter();
+      self.renderItems();
+    }
+
     function loadDetails(url) {
       var self = this;
 
@@ -449,8 +1121,9 @@
         choice.voice = 0;
         choice.season = 0;
 
-        self.renderFilter();
-        self.renderItems();
+        finishDetails(
+          self
+        );
       });
     }
 
@@ -551,8 +1224,9 @@
         choice.voice = 0;
         choice.season = 0;
 
-        self.renderFilter();
-        self.renderItems();
+        finishDetails(
+          self
+        );
       });
     }
 
@@ -594,6 +1268,8 @@
           if (a.reset) {
             choice.voice = 0;
             choice.season = 0;
+
+            savePreference();
 
             if (
               details &&
@@ -650,6 +1326,8 @@
             choice.season =
               b.index;
 
+            savePreference();
+
             self.renderFilter();
             self.renderItems();
           }
@@ -663,6 +1341,10 @@
           )
           .hide();
       } catch (e) {}
+
+      files.appendHead(
+        brand
+      );
 
       files.appendHead(
         filter.render()
@@ -687,7 +1369,10 @@
     };
 
     this.loadEpisodes =
-      function (voice) {
+      function (
+        voice,
+        wantedSeason
+      ) {
         var self = this;
 
         if (
@@ -719,6 +1404,12 @@
             data.episodes || [];
 
           choice.season = 0;
+
+          applySeason(
+            wantedSeason
+          );
+
+          savePreference();
 
           self.renderFilter();
           self.renderItems();
@@ -953,29 +1644,72 @@
 
         items.forEach(
           function (episode) {
+            var progress =
+              readJson(
+                STORAGE.progress
+              )[
+                preferenceKey()
+              ] || {};
+
+            var isContinue =
+              details.is_series &&
+              setting(
+                STORAGE.continueMode,
+                '1'
+              ) === '1' &&
+              season &&
+              String(
+                progress.season
+              ) ===
+              String(
+                season.id
+              ) &&
+              String(
+                progress.episode
+              ) ===
+              String(
+                episode.episode_id
+              );
+
+            var displayTitle =
+              episode.name ||
+              (
+                details.is_series
+                  ? (
+                      'Серия ' +
+                      episode.episode_id
+                    )
+                  : 'Смотреть фильм'
+              );
+
+            if (isContinue) {
+              displayTitle =
+                '▶ ' +
+                displayTitle;
+            }
+
             var element = {
               title:
-                episode.name ||
-                (
-                  details.is_series
-                    ? (
-                        'Серия ' +
-                        episode.episode_id
-                      )
-                    : 'Смотреть фильм'
-                ),
+                displayTitle,
 
               quality:
-                'HDREZKA',
+                qualityLabel(),
 
               info:
-                voice &&
-                voice.name
-                  ? (
-                      ' / ' +
-                      voice.name
-                    )
-                  : ''
+                (
+                  voice &&
+                  voice.name
+                    ? (
+                        ' / ' +
+                        voice.name
+                      )
+                    : ''
+                ) +
+                (
+                  isContinue
+                    ? ' • ПРОДОЛЖИТЬ'
+                    : ''
+                )
             };
 
             var item =
@@ -1006,6 +1740,12 @@
                   );
                   return;
                 }
+
+                saveProgress(
+                  details.is_series
+                    ? episode
+                    : null
+                );
 
                 notice(
                   'HDREZKA: получаем Premium-поток...'
@@ -1062,7 +1802,9 @@
 
                     var first = {
                       url:
-                        data.url,
+                        pickQuality(
+                          data
+                        ),
 
                       title:
                         title,
@@ -1299,7 +2041,7 @@
 
     Lampa.Activity.push({
       url: '',
-      title: 'HDREZKA Premium',
+      title: 'HDREZKA Premium • by DENYS',
       component: COMPONENT,
       search:
         movie.title ||
@@ -1323,7 +2065,7 @@
   function addMainButton() {
     var button =
       '<div class="full-start__button selector view--hdrezka-premium" ' +
-      'data-subtitle="HDREZKA Premium ' +
+      'data-subtitle="HDREZKA Premium • by DENYS ' +
       VERSION +
       '">' +
         '<svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">' +
@@ -1425,10 +2167,10 @@
           VERSION,
 
         name:
-          'HDREZKA Premium',
+          'HDREZKA Premium • by DENYS',
 
         description:
-          'HDRezka с вашим аккаунтом',
+          'Premium HDRezka с вашим аккаунтом • DENYS EDITION',
 
         component:
           COMPONENT,
@@ -1437,7 +2179,7 @@
           function () {
             return {
               name:
-                'HDREZKA Premium',
+                'HDREZKA Premium • by DENYS',
 
               description:
                 'Ваш аккаунт HDRezka'
@@ -1455,12 +2197,13 @@
   function init() {
     try {
       addSettings();
+      addStyle();
       addTemplates();
       addMainButton();
       registerManifest();
 
       console.log(
-        'HDREZKA Premium ' +
+        'HDREZKA Premium • by DENYS ' +
         VERSION +
         ' started'
       );

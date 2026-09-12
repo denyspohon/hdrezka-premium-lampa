@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import re
+import time
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
@@ -19,7 +20,9 @@ from hdrezka import HDRezkaClient
 from hdrezka.stream.player import PlayerSeries
 
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "2.0.0"
+AUTHOR = "DENYS"
+STARTED_AT = time.time()
 
 # ВАЖНО:
 # standby-rezka.tv в 2026 больше нельзя использовать как "поисковое зеркало":
@@ -39,6 +42,53 @@ SESSION_SECRET = os.getenv(
     "SESSION_SECRET",
     "hdrezka-lampa-change-this-secret-2026"
 ).encode("utf-8")
+
+
+# Lightweight in-memory cache. Render may restart the process at any time,
+# so this is only a speed optimization, never persistent state.
+SEARCH_CACHE_TTL = 30 * 60
+SEARCH_CACHE_MAX = 200
+_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+def _cache_get(key: str) -> list[dict[str, Any]] | None:
+    item = _SEARCH_CACHE.get(key)
+
+    if not item:
+        return None
+
+    expires, value = item
+
+    if expires <= time.time():
+        _SEARCH_CACHE.pop(key, None)
+        return None
+
+    # callers add score to rows, so return copies
+    return [dict(row) for row in value]
+
+
+def _cache_set(key: str, value: list[dict[str, Any]]) -> None:
+    if len(_SEARCH_CACHE) >= SEARCH_CACHE_MAX:
+        # Drop expired entries first, then oldest arbitrary keys.
+        now = time.time()
+        expired = [
+            k for k, (expires, _) in _SEARCH_CACHE.items()
+            if expires <= now
+        ]
+
+        for k in expired:
+            _SEARCH_CACHE.pop(k, None)
+
+        while len(_SEARCH_CACHE) >= SEARCH_CACHE_MAX:
+            try:
+                _SEARCH_CACHE.pop(next(iter(_SEARCH_CACHE)))
+            except StopIteration:
+                break
+
+    _SEARCH_CACHE[key] = (
+        time.time() + SEARCH_CACHE_TTL,
+        [dict(row) for row in value],
+    )
 
 
 app = FastAPI(
@@ -503,10 +553,35 @@ async def search_candidates(
     diagnostics: list[dict[str, Any]] = []
 
     for query in queries:
-        rows, debug = await search_one(
-            client,
-            query,
+        cache_key = (
+            client.host.rstrip("/")
+            + "|"
+            + normalized(query)
         )
+
+        cached = _cache_get(cache_key)
+
+        if cached is not None:
+            rows = cached
+            debug = {
+                "host": client.host,
+                "query": query,
+                "cache": "hit",
+                "cached_results": len(rows),
+            }
+        else:
+            rows, debug = await search_one(
+                client,
+                query,
+            )
+
+            debug["cache"] = "miss"
+
+            if rows:
+                _cache_set(
+                    cache_key,
+                    rows,
+                )
 
         diagnostics.append(debug)
 
@@ -936,7 +1011,10 @@ async def root(
             "HDREZKA Premium for Lampa"
         ),
         "version": APP_VERSION,
+        "author": AUTHOR,
+        "edition": "DENYS EDITION",
         "content_host": CONTENT_HOST,
+        "uptime_seconds": int(time.time() - STARTED_AT),
         "plugin": (
             base + "/plugin.js"
         ),
@@ -948,7 +1026,24 @@ async def health():
     return {
         "ok": True,
         "version": APP_VERSION,
+        "author": AUTHOR,
         "content_host": CONTENT_HOST,
+        "uptime_seconds": int(time.time() - STARTED_AT),
+        "search_cache_entries": len(_SEARCH_CACHE),
+    }
+
+
+@app.get("/api/about")
+async def about():
+    return {
+        "ok": True,
+        "name": "HDREZKA Premium",
+        "edition": "DENYS EDITION",
+        "author": AUTHOR,
+        "version": APP_VERSION,
+        "content_host": CONTENT_HOST,
+        "uptime_seconds": int(time.time() - STARTED_AT),
+        "search_cache_entries": len(_SEARCH_CACHE),
     }
 
 

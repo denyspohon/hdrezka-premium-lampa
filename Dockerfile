@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py plugin.js sitecustomize.py ./
+COPY app.py plugin.js ./
 
 EXPOSE 10000
 
