@@ -5,7 +5,7 @@
   window.hdrezka_premium_lampa_ready = true;
 
   var API = '__API_BASE__';
-  var VERSION = '2.0.0';
+  var VERSION = '2.1.0';
   var AUTHOR = 'DENYS';
   var EDITION = 'DENYS EDITION';
   var COMPONENT = 'hdrezka_premium';
@@ -813,6 +813,382 @@
       );
     }
 
+
+    function timelineBaseTitle() {
+      var movie = object.movie || {};
+
+      return (
+        movie.original_name ||
+        movie.original_title ||
+        movie.name ||
+        movie.title ||
+        (
+          details &&
+          details.name
+        ) ||
+        'HDREZKA'
+      );
+    }
+
+    function timelineHash(episode) {
+      var title =
+        timelineBaseTitle();
+
+      if (
+        details &&
+        details.is_series &&
+        episode
+      ) {
+        var season =
+          episode.season_id ||
+          (
+            currentSeason() &&
+            currentSeason().id
+          ) ||
+          1;
+
+        var ep =
+          episode.episode_id ||
+          episode.episode ||
+          1;
+
+        var separator =
+          parseInt(season, 10) > 10
+            ? ':'
+            : '';
+
+        return Lampa.Utils.hash(
+          [
+            season,
+            separator,
+            ep,
+            title
+          ].join('')
+        );
+      }
+
+      return Lampa.Utils.hash(
+        title
+      );
+    }
+
+    function timelineView(episode) {
+      try {
+        return Lampa.Timeline.view(
+          timelineHash(episode)
+        );
+      }
+      catch (e) {
+        return {
+          hash:
+            timelineHash(episode),
+
+          percent:
+            0,
+
+          time:
+            0,
+
+          duration:
+            0
+        };
+      }
+    }
+
+    function timelineRoad(view) {
+      if (!view) {
+        return {
+          percent: 0,
+          time: 0,
+          duration: 0
+        };
+      }
+
+      return {
+        percent:
+          parseFloat(
+            view.percent || 0
+          ) || 0,
+
+        time:
+          parseFloat(
+            view.time || 0
+          ) || 0,
+
+        duration:
+          parseFloat(
+            view.duration || 0
+          ) || 0
+      };
+    }
+
+    function nextEpisodeAfter(episode) {
+      if (
+        !details ||
+        !details.is_series ||
+        !episode ||
+        !details.episodes
+      ) {
+        return null;
+      }
+
+      var ordered =
+        details.episodes
+          .slice()
+          .sort(
+            function (a, b) {
+              var sa =
+                parseInt(
+                  a.season_id,
+                  10
+                ) || 0;
+
+              var sb =
+                parseInt(
+                  b.season_id,
+                  10
+                ) || 0;
+
+              if (sa !== sb) {
+                return sa - sb;
+              }
+
+              return (
+                (
+                  parseInt(
+                    a.episode_id,
+                    10
+                  ) || 0
+                ) -
+                (
+                  parseInt(
+                    b.episode_id,
+                    10
+                  ) || 0
+                )
+              );
+            }
+          );
+
+      for (
+        var i = 0;
+        i < ordered.length;
+        i++
+      ) {
+        if (
+          String(
+            ordered[i].season_id
+          ) ===
+          String(
+            episode.season_id
+          ) &&
+          String(
+            ordered[i].episode_id
+          ) ===
+          String(
+            episode.episode_id
+          )
+        ) {
+          return (
+            ordered[i + 1] ||
+            null
+          );
+        }
+      }
+
+      return null;
+    }
+
+    function saveTimelineProgress(
+      episode,
+      road
+    ) {
+      if (!details) return;
+
+      savePreference();
+
+      var key =
+        preferenceKey();
+
+      var all =
+        readJson(
+          STORAGE.progress
+        );
+
+      var current =
+        all[key] ||
+        {};
+
+      var voice =
+        currentVoice();
+
+      var season =
+        currentSeason();
+
+      var percent =
+        parseFloat(
+          road &&
+          road.percent ||
+          0
+        ) || 0;
+
+      var time =
+        parseFloat(
+          road &&
+          road.time ||
+          0
+        ) || 0;
+
+      var duration =
+        parseFloat(
+          road &&
+          road.duration ||
+          0
+        ) || 0;
+
+      current.voice =
+        voice
+          ? voice.name
+          : (
+              current.voice ||
+              ''
+            );
+
+      current.time =
+        time;
+
+      current.duration =
+        duration;
+
+      current.percent =
+        percent;
+
+      current.updated =
+        Date.now();
+
+      if (
+        details.is_series &&
+        episode
+      ) {
+        current.season =
+          episode.season_id ||
+          (
+            season
+              ? season.id
+              : null
+          );
+
+        current.episode =
+          episode.episode_id;
+
+        /*
+          Если серия реально досмотрена,
+          "Продолжить" переносим на следующую.
+          Таймлайн текущей серии при этом остаётся
+          в нативном Lampa.Timeline и показывает 100%.
+        */
+        if (percent >= 92) {
+          var next =
+            nextEpisodeAfter(
+              episode
+            );
+
+          if (next) {
+            current.season =
+              next.season_id;
+
+            current.episode =
+              next.episode_id;
+
+            current.time =
+              0;
+
+            current.duration =
+              0;
+
+            current.percent =
+              0;
+          }
+        }
+      }
+
+      all[key] =
+        current;
+
+      writeJson(
+        STORAGE.progress,
+        all
+      );
+    }
+
+    function wrapTimeline(
+      view,
+      episode
+    ) {
+      if (!view) return view;
+
+      if (
+        view._hdrezka_denys_wrapped
+      ) {
+        return view;
+      }
+
+      var original =
+        view.handler;
+
+      var lastSave =
+        0;
+
+      view.handler =
+        function (
+          percent,
+          time,
+          duration
+        ) {
+          if (original) {
+            try {
+              original(
+                percent,
+                time,
+                duration
+              );
+            }
+            catch (e) {}
+          }
+
+          var now =
+            Date.now();
+
+          if (
+            now - lastSave >
+              1000 ||
+            percent >= 92
+          ) {
+            lastSave =
+              now;
+
+            saveTimelineProgress(
+              episode,
+              {
+                percent:
+                  percent,
+
+                time:
+                  time,
+
+                duration:
+                  duration
+              }
+            );
+          }
+        };
+
+      view._hdrezka_denys_wrapped =
+        true;
+
+      return view;
+    }
+
     function findVoiceIndex(name) {
       if (
         !name ||
@@ -944,13 +1320,6 @@
 
       savePreference();
 
-      if (
-        !details.is_series ||
-        !episode
-      ) {
-        return;
-      }
-
       var key =
         preferenceKey();
 
@@ -959,26 +1328,50 @@
           STORAGE.progress
         );
 
+      var current =
+        progress[key] ||
+        {};
+
       var voice =
         currentVoice();
 
       var season =
         currentSeason();
 
-      progress[key] = {
-        voice:
-          voice
-            ? voice.name
-            : '',
-        season:
-          season
-            ? season.id
-            : null,
-        episode:
-          episode.episode_id,
-        updated:
-          Date.now()
-      };
+      current.voice =
+        voice
+          ? voice.name
+          : (
+              current.voice ||
+              ''
+            );
+
+      current.updated =
+        Date.now();
+
+      if (
+        details.is_series &&
+        episode
+      ) {
+        current.season =
+          episode.season_id ||
+          (
+            season
+              ? season.id
+              : null
+          );
+
+        current.episode =
+          episode.episode_id;
+      }
+
+      /*
+        Не сбрасываем time/duration/percent при повторном
+        открытии той же серии/фильма — это и есть resume.
+      */
+
+      progress[key] =
+        current;
 
       writeJson(
         STORAGE.progress,
@@ -1644,6 +2037,23 @@
 
         items.forEach(
           function (episode) {
+            var timeline =
+              wrapTimeline(
+                timelineView(
+                  details.is_series
+                    ? episode
+                    : null
+                ),
+                details.is_series
+                  ? episode
+                  : null
+              );
+
+            var road =
+              timelineRoad(
+                timeline
+              );
+
             var progress =
               readJson(
                 STORAGE.progress
@@ -1688,6 +2098,42 @@
                 displayTitle;
             }
 
+            var progressInfo =
+              '';
+
+            if (
+              road.duration > 0 &&
+              road.percent > 0 &&
+              road.percent < 92
+            ) {
+              try {
+                progressInfo =
+                  ' • ' +
+                  Math.round(
+                    road.percent
+                  ) +
+                  '% • ' +
+                  Lampa.Utils.secondsToTime(
+                    road.time,
+                    true
+                  );
+              }
+              catch (e) {
+                progressInfo =
+                  ' • ' +
+                  Math.round(
+                    road.percent
+                  ) +
+                  '%';
+              }
+            }
+            else if (
+              road.percent >= 92
+            ) {
+              progressInfo =
+                ' • ✓ ПРОСМОТРЕНО';
+            }
+
             var element = {
               title:
                 displayTitle,
@@ -1709,7 +2155,8 @@
                   isContinue
                     ? ' • ПРОДОЛЖИТЬ'
                     : ''
-                )
+                ) +
+                progressInfo
             };
 
             var item =
@@ -1717,6 +2164,55 @@
                 'hdrezka_premium_item',
                 element
               );
+
+            /*
+              Нативный прогресс Lampa:
+              полоска, процент, таймкод и автоматическое
+              сохранение/восстановление позиции.
+            */
+            try {
+              if (
+                Lampa.Timeline &&
+                Lampa.Timeline.render
+              ) {
+                item.append(
+                  Lampa.Timeline.render(
+                    timeline
+                  )
+                );
+              }
+
+              if (
+                Lampa.Timeline &&
+                Lampa.Timeline.details
+              ) {
+                item
+                  .find(
+                    '.online__quality'
+                  )
+                  .append(
+                    Lampa.Timeline.details(
+                      timeline,
+                      ' / '
+                    )
+                  );
+              }
+
+              if (
+                road.percent >= 92
+              ) {
+                item.append(
+                  '<div class="torrent-item__viewed">' +
+                  Lampa.Template.get(
+                    'icon_star',
+                    {},
+                    true
+                  ) +
+                  '</div>'
+                );
+              }
+            }
+            catch (e) {}
 
             item.on(
               'hover:focus',
@@ -1800,6 +2296,34 @@
                         );
                     }
 
+                    /*
+                      Добавляем фильм в нативную историю Lampa.
+                    */
+                    try {
+                      if (
+                        object.movie &&
+                        object.movie.id &&
+                        Lampa.Favorite &&
+                        Lampa.Favorite.add
+                      ) {
+                        Lampa.Favorite.add(
+                          'history',
+                          object.movie,
+                          100
+                        );
+                      }
+                    }
+                    catch (e) {}
+
+                    var resumePosition =
+                      (
+                        timeline &&
+                        timeline.time &&
+                        timeline.percent < 92
+                      )
+                        ? timeline.time
+                        : -1;
+
                     var first = {
                       url:
                         pickQuality(
@@ -1813,8 +2337,46 @@
                         data.quality || {},
 
                       subtitles:
-                        data.subtitles || []
+                        data.subtitles || [],
+
+                      /*
+                        Именно эти поля дают стандартному
+                        плееру Lampa настоящий resume:
+                        пауза -> выход -> открыть снова ->
+                        продолжить с того же таймкода.
+                      */
+                      timeline:
+                        timeline,
+
+                      position:
+                        resumePosition,
+
+                      card:
+                        object.movie,
+
+                      movie:
+                        object.movie,
+
+                      season:
+                        details.is_series &&
+                        season
+                          ? season.id
+                          : null,
+
+                      episode:
+                        details.is_series
+                          ? episode.episode_id
+                          : null
                     };
+
+                    /*
+                      Для одного видео тоже передаём playlist —
+                      так Lampa одинаково ведёт timeline
+                      на разных платформах/сборках.
+                    */
+                    first.playlist = [
+                      first
+                    ];
 
                     Lampa.Player.play(
                       first
@@ -2194,9 +2756,57 @@
     } catch (e) {}
   }
 
+  function installProgressSafety() {
+    if (
+      window.hdrezka_denys_progress_safety
+    ) {
+      return;
+    }
+
+    window.hdrezka_denys_progress_safety =
+      true;
+
+    /*
+      Lampa сама обновляет timeline во время просмотра.
+      Этот listener нужен как дополнительная страховка:
+      при внешнем/особом плеере данные всё равно остаются
+      в стандартном Timeline-хранилище Lampa.
+    */
+    try {
+      if (
+        Lampa.Timeline &&
+        Lampa.Timeline.listener
+      ) {
+        Lampa.Timeline.listener.follow(
+          'update',
+          function (e) {
+            try {
+              if (
+                !e ||
+                !e.data ||
+                !e.data.hash
+              ) {
+                return;
+              }
+
+              /*
+                Ничего не перезаписываем вручную —
+                сам факт listener здесь важен только
+                для совместимости и будущей синхронизации.
+              */
+            }
+            catch (err) {}
+          }
+        );
+      }
+    }
+    catch (e) {}
+  }
+
   function init() {
     try {
       addSettings();
+      installProgressSafety();
       addStyle();
       addTemplates();
       addMainButton();
