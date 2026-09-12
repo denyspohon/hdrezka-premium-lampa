@@ -20,7 +20,7 @@ from hdrezka import HDRezkaClient
 from hdrezka.stream.player import PlayerSeries
 
 
-APP_VERSION = "3.0.0"
+APP_VERSION = "4.0.0"
 AUTHOR = "DENYS"
 STARTED_AT = time.time()
 

@@ -5,7 +5,7 @@
   window.hdrezka_premium_lampa_ready = true;
 
   var API = '__API_BASE__';
-  var VERSION = '3.0.0';
+  var VERSION = '4.0.0';
   var AUTHOR = 'DENYS';
   var EDITION = 'DENYS EDITION';
   var COMPONENT = 'hdrezka_premium';
@@ -23,7 +23,11 @@
     playback: 'hdrezka_denys_playback_v3',
     resumeMode: 'hdrezka_premium_resume_mode',
     watchedAt: 'hdrezka_premium_watched_at',
-    showProgress: 'hdrezka_premium_show_progress'
+    showProgress: 'hdrezka_premium_show_progress',
+    playerMode: 'hdrezka_premium_player_mode',
+    autoNext: 'hdrezka_premium_auto_next',
+    prefetchNext: 'hdrezka_premium_prefetch_next',
+    focusContinue: 'hdrezka_premium_focus_continue'
   };
 
   function notice(text) {
@@ -889,12 +893,72 @@
 
       param: {
         name:
+          STORAGE.playerMode,
+        type:
+          'select',
+        values: {
+          'lampa':
+            'Встроенный Lampa — рекомендуется',
+          'system':
+            'Как в общих настройках Lampa'
+        },
+        default:
+          'lampa'
+      },
+
+      field: {
+        name:
+          'Плеер HDREZKA',
+
+        description:
+          'Встроенный Lampa нужен для нормального таймкода, NEXT/PREV и плейлиста'
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
           STORAGE.resumeMode,
         type:
           'select',
         values: {
-          '1': 'Автоматически',
-          '0': 'Всегда с начала'
+          'continue':
+            'Автоматически продолжать',
+          'ask':
+            'Спрашивать: продолжить или сначала',
+          'again':
+            'Всегда с начала'
+        },
+        default:
+          'continue'
+      },
+
+      field: {
+        name:
+          'Таймкод HDREZKA',
+
+        description:
+          'Работает независимо от общей настройки Lampa, пока открыт HDREZKA'
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
+          STORAGE.autoNext,
+        type:
+          'select',
+        values: {
+          '1':
+            'Да',
+          '0':
+            'Нет'
         },
         default:
           '1'
@@ -902,10 +966,66 @@
 
       field: {
         name:
-          'Продолжение по таймкоду',
+          'Авто следующая серия',
 
         description:
-          'Сохраняет реальную позицию видео каждые ~2 секунды'
+          'После конца серии Lampa сама включает следующую, включая переход между сезонами'
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
+          STORAGE.prefetchNext,
+        type:
+          'select',
+        values: {
+          '1':
+            'Да',
+          '0':
+            'Нет'
+        },
+        default:
+          '1'
+      },
+
+      field: {
+        name:
+          'Подготавливать следующую серию',
+
+        description:
+          'Заранее получает следующий Premium-поток, чтобы NEXT запускался быстрее'
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
+          STORAGE.focusContinue,
+        type:
+          'select',
+        values: {
+          '1':
+            'Да',
+          '0':
+            'Нет'
+        },
+        default:
+          '1'
+      },
+
+      field: {
+        name:
+          'Фокус на серии «Продолжить»',
+
+        description:
+          'При входе сразу выделяет последнюю незавершённую серию'
       }
     });
 
@@ -1073,6 +1193,203 @@
     } catch (e) {}
   }
 
+
+  /*
+    ============================================================
+    DENYS PLAYER SCOPE v4
+    ============================================================
+    Корень двух прошлых проблем был не в Rezka:
+    1) Lampa могла отдавать HDRezka во внешний/системный плеер.
+       Тогда Lampa.Timeline и Lampa Playlist вообще не управляют видео.
+    2) В v3 мы передавали playlist = [first], то есть следующей серии
+       физически не существовало в плейлисте.
+
+    v4 по умолчанию запускает именно ВНУТРЕННИЙ плеер Lampa,
+    временно включает native timecode "continue" и playlist_next,
+    а после выхода возвращает пользовательские настройки обратно.
+  */
+  var DenysPlayerScope = (function () {
+    var active = false;
+    var originalTimecode = null;
+    var originalPlaylistNext = null;
+    var restoreTimer = null;
+
+    function resumePolicy() {
+      var raw = setting(
+        STORAGE.resumeMode,
+        'continue'
+      );
+
+      /* миграция старых значений v2/v3 */
+      if (raw === '1') return 'continue';
+      if (raw === '0') return 'again';
+
+      if (
+        raw !== 'continue' &&
+        raw !== 'ask' &&
+        raw !== 'again'
+      ) {
+        return 'continue';
+      }
+
+      return raw;
+    }
+
+    function useInternalPlayer() {
+      return setting(
+        STORAGE.playerMode,
+        'lampa'
+      ) !== 'system';
+    }
+
+    function begin() {
+      if (restoreTimer) {
+        clearTimeout(restoreTimer);
+        restoreTimer = null;
+      }
+
+      if (!active) {
+        try {
+          originalTimecode =
+            Lampa.Storage.get(
+              'player_timecode',
+              'continue'
+            );
+        } catch (e) {
+          originalTimecode =
+            'continue';
+        }
+
+        try {
+          originalPlaylistNext =
+            Lampa.Storage.get(
+              'playlist_next',
+              true
+            );
+        } catch (e) {
+          originalPlaylistNext =
+            true;
+        }
+      }
+
+      active = true;
+
+      if (useInternalPlayer()) {
+        try {
+          Lampa.Storage.set(
+            'player_timecode',
+            resumePolicy()
+          );
+        } catch (e) {}
+
+        if (
+          setting(
+            STORAGE.autoNext,
+            '1'
+          ) === '1'
+        ) {
+          try {
+            Lampa.Storage.set(
+              'playlist_next',
+              true
+            );
+          } catch (e) {}
+        }
+      }
+    }
+
+    function decorate(item) {
+      item =
+        item ||
+        {};
+
+      item.hdrezka_denys =
+        true;
+
+      /*
+        Ключевой фикс.
+        'lampa' принудительно запускает внутренний player.js,
+        где реально работают Timeline и Playlist.
+      */
+      if (useInternalPlayer()) {
+        item.launch_player =
+          'lampa';
+      }
+
+      return item;
+    }
+
+    function onStart(data) {
+      if (
+        data &&
+        data.hdrezka_denys
+      ) {
+        begin();
+      }
+    }
+
+    function restore() {
+      if (!active) return;
+
+      try {
+        if (
+          originalTimecode !== null
+        ) {
+          Lampa.Storage.set(
+            'player_timecode',
+            originalTimecode
+          );
+        }
+      } catch (e) {}
+
+      try {
+        if (
+          originalPlaylistNext !== null
+        ) {
+          Lampa.Storage.set(
+            'playlist_next',
+            originalPlaylistNext
+          );
+        }
+      } catch (e) {}
+
+      active = false;
+      originalTimecode = null;
+      originalPlaylistNext = null;
+      restoreTimer = null;
+    }
+
+    function onDestroy() {
+      if (!active) return;
+
+      /*
+        При NEXT внутри Lampa:
+        destroy текущей серии -> сразу start следующей.
+        Поэтому не восстанавливаем настройки мгновенно.
+      */
+      if (restoreTimer) {
+        clearTimeout(
+          restoreTimer
+        );
+      }
+
+      restoreTimer =
+        setTimeout(
+          restore,
+          900
+        );
+    }
+
+    return {
+      begin: begin,
+      decorate: decorate,
+      onStart: onStart,
+      onDestroy: onDestroy,
+      resumePolicy: resumePolicy,
+      internal: useInternalPlayer
+    };
+  })();
+
   function component(object) {
     var scroll =
       new Lampa.Scroll({
@@ -1190,7 +1507,9 @@
 
 
     function timelineBaseTitle() {
-      var movie = object.movie || {};
+      var movie =
+        object.movie ||
+        {};
 
       return (
         movie.original_name ||
@@ -1205,109 +1524,102 @@
       );
     }
 
-    function mediaProgressKey(episode) {
-      var base =
-        preferenceKey();
+    /*
+      Используем ТОТ ЖЕ hash, что официальный Lampa и лучшие
+      online-плагины. Благодаря этому:
+      - native resume;
+      - полоска прогресса;
+      - синхронизация Timeline аккаунта Lampa;
+      - watched status;
+      - совместимость с другими online-источниками.
+    */
+    function timelineHash(episode) {
+      var title =
+        timelineBaseTitle();
 
       if (
         details &&
         details.is_series &&
         episode
       ) {
-        return (
-          base +
-          '|s' +
-          String(episode.season_id || 1) +
-          '|e' +
-          String(episode.episode_id || 1)
+        var season =
+          parseInt(
+            episode.season_id,
+            10
+          ) || 1;
+
+        var ep =
+          parseInt(
+            episode.episode_id,
+            10
+          ) || 1;
+
+        return Lampa.Utils.hash(
+          [
+            season,
+            season > 10
+              ? ':'
+              : '',
+            ep,
+            title
+          ].join('')
         );
       }
 
-      return base + '|movie';
-    }
-
-    function timelineHash(episode) {
       return Lampa.Utils.hash(
-        'hdrezka-denys-v3|' +
-        mediaProgressKey(episode)
+        title
       );
     }
 
     function timelineView(episode) {
-      var hash =
-        timelineHash(episode);
-
-      var own =
-        DenysPlayback.getSaved(
-          mediaProgressKey(episode)
-        ) || {};
-
       try {
-        if (
-          own.updated &&
-          Lampa.Timeline &&
-          Lampa.Timeline.update
-        ) {
-          Lampa.Timeline.update({
-            hash: hash,
-            percent: Number(own.percent || 0),
-            time: Number(own.time || 0),
-            duration: Number(own.duration || 0),
-            received: true
-          });
-        }
-
-        return Lampa.Timeline.view(hash);
+        return Lampa.Timeline.view(
+          timelineHash(
+            episode
+          )
+        );
       }
       catch (e) {
         return {
-          hash: hash,
-          percent: Number(own.percent || 0),
-          time: Number(own.time || 0),
-          duration: Number(own.duration || 0)
+          hash:
+            timelineHash(
+              episode
+            ),
+          percent:
+            0,
+          time:
+            0,
+          duration:
+            0
         };
       }
     }
 
-    function timelineRoad(view, episode) {
-      var nativeRoad = {
-        percent: 0,
-        time: 0,
-        duration: 0
+    function timelineRoad(
+      view
+    ) {
+      return {
+        percent:
+          parseFloat(
+            view &&
+            view.percent ||
+            0
+          ) || 0,
+
+        time:
+          parseFloat(
+            view &&
+            view.time ||
+            0
+          ) || 0,
+
+        duration:
+          parseFloat(
+            view &&
+            view.duration ||
+            0
+          ) || 0
       };
-
-      if (view) {
-        nativeRoad.percent =
-          parseFloat(view.percent || 0) || 0;
-        nativeRoad.time =
-          parseFloat(view.time || 0) || 0;
-        nativeRoad.duration =
-          parseFloat(view.duration || 0) || 0;
-      }
-
-      var own =
-        DenysPlayback.getSaved(
-          mediaProgressKey(episode)
-        ) || {};
-
-      /*
-        Наш фактический currentTime приоритетнее, потому что он берётся
-        прямо из <video>, а не зависит от реализации Timeline в сборке Lampa.
-      */
-      if (
-        Number(own.updated || 0) > 0
-      ) {
-        return {
-          percent:
-            parseFloat(own.percent || 0) || 0,
-          time:
-            parseFloat(own.time || 0) || 0,
-          duration:
-            parseFloat(own.duration || 0) || 0
-        };
-      }
-
-      return nativeRoad;
     }
 
     function nextEpisodeAfter(episode) {
@@ -1475,7 +1787,7 @@
           Таймлайн текущей серии при этом остаётся
           в нативном Lampa.Timeline и показывает 100%.
         */
-        if (percent >= 92) {
+        if (percent >= DenysPlayback.threshold()) {
           var next =
             nextEpisodeAfter(
               episode
@@ -1550,7 +1862,7 @@
           if (
             now - lastSave >
               1000 ||
-            percent >= 92
+            percent >= DenysPlayback.threshold()
           ) {
             lastSave =
               now;
@@ -2357,6 +2669,549 @@
         } catch (e) {}
       };
 
+    var streamMemory =
+      {};
+
+    function episodeKey(
+      episode,
+      voice
+    ) {
+      return [
+        details &&
+        details.url ||
+        '',
+        voice &&
+        voice.id ||
+        '',
+        episode &&
+        episode.season_id ||
+        0,
+        episode &&
+        episode.episode_id ||
+        0
+      ].join('|');
+    }
+
+    function requestStream(
+      episode,
+      voice
+    ) {
+      var key =
+        episodeKey(
+          episode,
+          voice
+        );
+
+      if (
+        streamMemory[key]
+      ) {
+        return streamMemory[key];
+      }
+
+      var promise =
+        api(
+          '/api/stream',
+          {
+            url:
+              details.url,
+
+            translator_id:
+              voice.id,
+
+            season:
+              details.is_series
+                ? episode.season_id
+                : null,
+
+            episode:
+              details.is_series
+                ? episode.episode_id
+                : null
+          }
+        ).then(
+          function (data) {
+            if (
+              !data ||
+              !data.url
+            ) {
+              throw new Error(
+                'HDREZKA не вернула видеопоток'
+              );
+            }
+
+            return data;
+          }
+        ).catch(
+          function (error) {
+            delete streamMemory[key];
+            throw error;
+          }
+        );
+
+      streamMemory[key] =
+        promise;
+
+      return promise;
+    }
+
+    function sortedEpisodes() {
+      return (
+        details &&
+        details.episodes
+          ? details.episodes.slice()
+          : []
+      ).sort(
+        function (a, b) {
+          var sa =
+            parseInt(
+              a.season_id,
+              10
+            ) || 0;
+
+          var sb =
+            parseInt(
+              b.season_id,
+              10
+            ) || 0;
+
+          if (sa !== sb) {
+            return sa - sb;
+          }
+
+          return (
+            (
+              parseInt(
+                a.episode_id,
+                10
+              ) || 0
+            ) -
+            (
+              parseInt(
+                b.episode_id,
+                10
+              ) || 0
+            )
+          );
+        }
+      );
+    }
+
+    function episodePlayerTitle(
+      episode
+    ) {
+      var base =
+        movieTitle(
+          object.movie ||
+          {}
+        );
+
+      if (
+        !details ||
+        !details.is_series ||
+        !episode
+      ) {
+        return base;
+      }
+
+      return (
+        base +
+        ' / S' +
+        episode.season_id +
+        'E' +
+        episode.episode_id +
+        ' / ' +
+        (
+          episode.name ||
+          (
+            'Серия ' +
+            episode.episode_id
+          )
+        )
+      );
+    }
+
+    function addHistory() {
+      try {
+        if (
+          object.movie &&
+          object.movie.id &&
+          Lampa.Favorite &&
+          Lampa.Favorite.add
+        ) {
+          Lampa.Favorite.add(
+            'history',
+            object.movie,
+            100
+          );
+        }
+      }
+      catch (e) {}
+    }
+
+    function preparePlayerItem(
+      episode,
+      voice
+    ) {
+      var timeline =
+        wrapTimeline(
+          timelineView(
+            details.is_series
+              ? episode
+              : null
+          ),
+          details.is_series
+            ? episode
+            : null
+        );
+
+      var item = {
+        title:
+          episodePlayerTitle(
+            episode
+          ),
+
+        quality:
+          {},
+
+        subtitles:
+          [],
+
+        timeline:
+          timeline,
+
+        card:
+          object.movie,
+
+        movie:
+          object.movie,
+
+        season:
+          details.is_series
+            ? episode.season_id
+            : null,
+
+        episode:
+          details.is_series
+            ? episode.episode_id
+            : null
+      };
+
+      DenysPlayerScope.decorate(
+        item
+      );
+
+      return item;
+    }
+
+    function buildRealPlaylist(
+      selectedEpisode,
+      voice,
+      selectedData
+    ) {
+      var listEpisodes =
+        details.is_series
+          ? sortedEpisodes()
+          : [
+              {
+                season_id:
+                  null,
+                episode_id:
+                  null,
+                name:
+                  'Смотреть фильм'
+              }
+            ];
+
+      var playlist =
+        [];
+
+      var first =
+        null;
+
+      listEpisodes.forEach(
+        function (ep) {
+          var playerItem =
+            preparePlayerItem(
+              ep,
+              voice
+            );
+
+          var isCurrent =
+            !details.is_series ||
+            (
+              String(
+                ep.season_id
+              ) ===
+              String(
+                selectedEpisode.season_id
+              ) &&
+              String(
+                ep.episode_id
+              ) ===
+              String(
+                selectedEpisode.episode_id
+              )
+            );
+
+          if (isCurrent) {
+            playerItem.url =
+              pickQuality(
+                selectedData
+              );
+
+            playerItem.quality =
+              selectedData.quality ||
+              {};
+
+            playerItem.subtitles =
+              selectedData.subtitles ||
+              [];
+
+            first =
+              playerItem;
+          }
+          else {
+            /*
+              Официальный Playlist Lampa умеет url как function(call).
+              Поэтому NEXT/PREV может сам запросить поток нужной серии
+              без выхода из плеера.
+            */
+            playerItem.url =
+              function (call) {
+                saveProgress(
+                  ep
+                );
+
+                DenysPlayerScope.begin();
+
+                notice(
+                  'HDREZKA: серия ' +
+                  ep.episode_id +
+                  '…'
+                );
+
+                requestStream(
+                  ep,
+                  voice
+                ).then(
+                  function (data) {
+                    playerItem.url =
+                      pickQuality(
+                        data
+                      );
+
+                    playerItem.quality =
+                      data.quality ||
+                      {};
+
+                    playerItem.subtitles =
+                      data.subtitles ||
+                      [];
+
+                    playerItem.timeline =
+                      wrapTimeline(
+                        timelineView(
+                          ep
+                        ),
+                        ep
+                      );
+
+                    DenysPlayerScope.decorate(
+                      playerItem
+                    );
+
+                    /*
+                      Когда URL уже готов — родной Lampa Playlist
+                      сам уничтожит текущую серию и запустит эту.
+                    */
+                    call();
+
+                    prefetchAround(
+                      ep,
+                      voice
+                    );
+                  }
+                ).catch(
+                  function (error) {
+                    notice(
+                      'HDREZKA: ' +
+                      error.message
+                    );
+
+                    try {
+                      Lampa.Player.close();
+                    } catch (e) {}
+                  }
+                );
+              };
+          }
+
+          playlist.push(
+            playerItem
+          );
+        }
+      );
+
+      if (!first) {
+        first =
+          playlist[0];
+      }
+
+      return {
+        first:
+          first,
+        playlist:
+          playlist
+      };
+    }
+
+    function prefetchAround(
+      episode,
+      voice
+    ) {
+      if (
+        setting(
+          STORAGE.prefetchNext,
+          '1'
+        ) !== '1' ||
+        !details.is_series
+      ) {
+        return;
+      }
+
+      var ordered =
+        sortedEpisodes();
+
+      var index =
+        -1;
+
+      for (
+        var i = 0;
+        i < ordered.length;
+        i++
+      ) {
+        if (
+          String(
+            ordered[i].season_id
+          ) ===
+          String(
+            episode.season_id
+          ) &&
+          String(
+            ordered[i].episode_id
+          ) ===
+          String(
+            episode.episode_id
+          )
+        ) {
+          index = i;
+          break;
+        }
+      }
+
+      if (
+        index >= 0 &&
+        ordered[index + 1]
+      ) {
+        /*
+          Ошибку prefetch не показываем — это только ускорение.
+        */
+        requestStream(
+          ordered[index + 1],
+          voice
+        ).catch(
+          function () {}
+        );
+      }
+    }
+
+    function launchPremium(
+      episode,
+      voice
+    ) {
+      saveProgress(
+        details.is_series
+          ? episode
+          : null
+      );
+
+      addHistory();
+
+      DenysPlayerScope.begin();
+
+      notice(
+        'HDREZKA: получаем Premium-поток…'
+      );
+
+      requestStream(
+        details.is_series
+          ? episode
+          : {
+              season_id:
+                null,
+              episode_id:
+                null
+            },
+        voice
+      ).then(
+        function (data) {
+          var built =
+            buildRealPlaylist(
+              details.is_series
+                ? episode
+                : {
+                    season_id:
+                      null,
+                    episode_id:
+                      null
+                  },
+              voice,
+              data
+            );
+
+          var first =
+            built.first;
+
+          var playlist =
+            built.playlist;
+
+          /*
+            Это настоящий playlist, а не [first].
+            В сериале он содержит ВСЕ серии ВСЕХ сезонов
+            выбранной озвучки.
+          */
+          first.playlist =
+            playlist;
+
+          DenysPlayerScope.decorate(
+            first
+          );
+
+          Lampa.Player.play(
+            first
+          );
+
+          Lampa.Player.playlist(
+            playlist
+          );
+
+          prefetchAround(
+            details.is_series
+              ? episode
+              : null,
+            voice
+          );
+        }
+      ).catch(
+        function (error) {
+          notice(
+            'HDREZKA: ' +
+            error.message
+          );
+        }
+      );
+    }
+
     this.renderItems =
       function () {
         var self = this;
@@ -2423,6 +3278,9 @@
           return;
         }
 
+        var continueTarget =
+          null;
+
         items.forEach(
           function (episode) {
             var timeline =
@@ -2439,10 +3297,7 @@
 
             var road =
               timelineRoad(
-                timeline,
-                details.is_series
-                  ? episode
-                  : null
+                timeline
               );
 
             var progress =
@@ -2556,6 +3411,17 @@
                 element
               );
 
+            if (
+              isContinue &&
+              setting(
+                STORAGE.focusContinue,
+                '1'
+              ) === '1'
+            ) {
+              continueTarget =
+                item[0];
+            }
+
             /*
               Нативный прогресс Lampa:
               полоска, процент, таймкод и автоматическое
@@ -2632,224 +3498,18 @@
                   return;
                 }
 
-                saveProgress(
+                launchPremium(
                   details.is_series
                     ? episode
-                    : null
-                );
-
-                notice(
-                  'HDREZKA: получаем Premium-поток...'
-                );
-
-                api(
-                  '/api/stream',
-                  {
-                    url:
-                      details.url,
-
-                    translator_id:
-                      voice.id,
-
-                    season:
-                      details.is_series
-                        ? season.id
-                        : null,
-
-                    episode:
-                      details.is_series
-                        ? episode.episode_id
-                        : null
-                  }
-                ).then(
-                  function (data) {
-                    if (
-                      !data ||
-                      !data.url
-                    ) {
-                      throw new Error(
-                        'HDREZKA не вернула видеопоток'
-                      );
-                    }
-
-                    var title =
-                      movieTitle(
-                        object.movie || {}
-                      );
-
-                    if (
-                      details.is_series
-                    ) {
-                      title +=
-                        ' / ' +
-                        (
-                          episode.name ||
-                          (
-                            'Серия ' +
-                            episode.episode_id
-                          )
-                        );
-                    }
-
-                    /*
-                      Добавляем фильм в нативную историю Lampa.
-                    */
-                    try {
-                      if (
-                        object.movie &&
-                        object.movie.id &&
-                        Lampa.Favorite &&
-                        Lampa.Favorite.add
-                      ) {
-                        Lampa.Favorite.add(
-                          'history',
-                          object.movie,
-                          100
-                        );
-                      }
-                    }
-                    catch (e) {}
-
-                    var exactSaved =
-                      DenysPlayback.getSaved(
-                        mediaProgressKey(
-                          details.is_series
-                            ? episode
-                            : null
-                        )
-                      );
-
-                    var resumePosition =
-                      (
-                        setting(
-                          STORAGE.resumeMode,
-                          '1'
-                        ) === '1' &&
-                        exactSaved &&
-                        Number(exactSaved.time || 0) > 8 &&
-                        Number(exactSaved.percent || 0) < DenysPlayback.threshold()
-                      )
-                        ? Number(exactSaved.time || 0)
-                        : -1;
-
-                    var first = {
-                      url:
-                        pickQuality(
-                          data
-                        ),
-
-                      title:
-                        title,
-
-                      quality:
-                        data.quality || {},
-
-                      subtitles:
-                        data.subtitles || [],
-
-                      /*
-                        Именно эти поля дают стандартному
-                        плееру Lampa настоящий resume:
-                        пауза -> выход -> открыть снова ->
-                        продолжить с того же таймкода.
-                      */
-                      timeline:
-                        timeline,
-
-                      position:
-                        resumePosition,
-
-                      card:
-                        object.movie,
-
-                      movie:
-                        object.movie,
-
-                      season:
-                        details.is_series &&
-                        season
-                          ? season.id
-                          : null,
-
-                      episode:
-                        details.is_series
-                          ? episode.episode_id
-                          : null
-                    };
-
-                    /*
-                      Для одного видео тоже передаём playlist —
-                      так Lampa одинаково ведёт timeline
-                      на разных платформах/сборках.
-                    */
-                    first.playlist = [
-                      first
-                    ];
-
-                    DenysPlayback.arm({
-                      key:
-                        mediaProgressKey(
-                          details.is_series
-                            ? episode
-                            : null
-                        ),
-
-                      timelineHash:
-                        timelineHash(
-                          details.is_series
-                            ? episode
-                            : null
-                        ),
-
-                      resumeTime:
-                        resumePosition > 0
-                          ? resumePosition
-                          : 0,
-
-                      title:
-                        title,
-
-                      voice:
-                        voice && voice.name
-                          ? voice.name
-                          : '',
-
-                      season:
-                        details.is_series && season
-                          ? season.id
-                          : null,
-
-                      episode:
-                        details.is_series
-                          ? episode.episode_id
-                          : null,
-
-                      onProgress:
-                        function (snapshot) {
-                          saveTimelineProgress(
-                            details.is_series
-                              ? episode
-                              : null,
-                            snapshot
-                          );
-                        }
-                    });
-
-                    Lampa.Player.play(
-                      first
-                    );
-
-                    Lampa.Player.playlist(
-                      [first]
-                    );
-                  }
-                ).catch(
-                  function (error) {
-                    notice(
-                      'HDREZKA: ' +
-                      error.message
-                    );
-                  }
+                    : {
+                        season_id:
+                          null,
+                        episode_id:
+                          null,
+                        name:
+                          'Смотреть фильм'
+                      },
+                  voice
                 );
               }
             );
@@ -2861,7 +3521,30 @@
         );
 
         this.activity.loader(false);
-        this.start(true);
+
+        if (
+          continueTarget
+        ) {
+          last =
+            continueTarget;
+
+          this.start(false);
+
+          setTimeout(
+            function () {
+              try {
+                scroll.update(
+                  $(continueTarget),
+                  true
+                );
+              } catch (e) {}
+            },
+            80
+          );
+        }
+        else {
+          this.start(true);
+        }
       };
 
     this.reset = function () {
@@ -3215,14 +3898,18 @@
 
   function installProgressSafety() {
     if (
-      window.hdrezka_denys_progress_safety_v3
+      window.hdrezka_denys_progress_safety_v4
     ) {
       return;
     }
 
-    window.hdrezka_denys_progress_safety_v3 =
+    window.hdrezka_denys_progress_safety_v4 =
       true;
 
+    /*
+      Используем родные события Lampa Player.
+      Таймкод сохраняет официальный Player Timeline.
+    */
     try {
       if (
         Lampa.Player &&
@@ -3230,18 +3917,17 @@
       ) {
         Lampa.Player.listener.follow(
           'start',
-          function () {
-            DenysPlayback.started();
+          function (data) {
+            DenysPlayerScope.onStart(
+              data
+            );
           }
         );
 
         Lampa.Player.listener.follow(
           'destroy',
           function () {
-            /*
-              Перед уничтожением забираем последний currentTime.
-            */
-            DenysPlayback.destroyed();
+            DenysPlayerScope.onDestroy();
           }
         );
       }
@@ -3251,6 +3937,31 @@
 
   function init() {
     try {
+      /*
+        Миграция v2/v3:
+        1 = continue, 0 = again.
+      */
+      if (
+        value(
+          STORAGE.resumeMode
+        ) === '1'
+      ) {
+        setValue(
+          STORAGE.resumeMode,
+          'continue'
+        );
+      }
+      else if (
+        value(
+          STORAGE.resumeMode
+        ) === '0'
+      ) {
+        setValue(
+          STORAGE.resumeMode,
+          'again'
+        );
+      }
+
       addSettings();
       installProgressSafety();
       addStyle();
