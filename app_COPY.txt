@@ -20,7 +20,7 @@ from hdrezka import HDRezkaClient
 from hdrezka.stream.player import PlayerSeries
 
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "3.0.0"
 AUTHOR = "DENYS"
 STARTED_AT = time.time()
 
@@ -49,6 +49,46 @@ SESSION_SECRET = os.getenv(
 SEARCH_CACHE_TTL = 30 * 60
 SEARCH_CACHE_MAX = 200
 _SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+# Session-scoped short caches for premium UX.
+# Keys include a hash of the signed user session, so accounts never share
+# translator/stream data with each other.
+_API_CACHE: dict[str, tuple[float, Any]] = {}
+API_CACHE_MAX = 400
+
+
+def _api_cache_get(key: str) -> Any | None:
+    item = _API_CACHE.get(key)
+    if not item:
+        return None
+
+    expires, value = item
+    if time.time() >= expires:
+        _API_CACHE.pop(key, None)
+        return None
+
+    return value
+
+
+def _api_cache_set(key: str, value: Any, ttl: int) -> None:
+    if len(_API_CACHE) >= API_CACHE_MAX:
+        now = time.time()
+        for old_key, (expires, _) in list(_API_CACHE.items()):
+            if expires <= now:
+                _API_CACHE.pop(old_key, None)
+
+        while len(_API_CACHE) >= API_CACHE_MAX:
+            try:
+                _API_CACHE.pop(next(iter(_API_CACHE)))
+            except StopIteration:
+                break
+
+    _API_CACHE[key] = (time.time() + ttl, value)
+
+
+def _session_cache_id(session: str) -> str:
+    return hashlib.sha1(session.encode('utf-8')).hexdigest()[:16]
 
 
 def _cache_get(key: str) -> list[dict[str, Any]] | None:
@@ -1030,6 +1070,7 @@ async def health():
         "content_host": CONTENT_HOST,
         "uptime_seconds": int(time.time() - STARTED_AT),
         "search_cache_entries": len(_SEARCH_CACHE),
+        "api_cache_entries": len(_API_CACHE),
     }
 
 
@@ -1044,6 +1085,7 @@ async def about():
         "content_host": CONTENT_HOST,
         "uptime_seconds": int(time.time() - STARTED_AT),
         "search_cache_entries": len(_SEARCH_CACHE),
+        "api_cache_entries": len(_API_CACHE),
     }
 
 
@@ -1269,6 +1311,21 @@ async def api_resolve(
 async def api_details(
     data: DetailsRequest,
 ):
+    cache_key = (
+        "details|"
+        + _session_cache_id(data.session)
+        + "|"
+        + data.url
+    )
+
+    cached = _api_cache_get(cache_key)
+    if cached is not None:
+        return {
+            "ok": True,
+            "details": cached,
+            "cache": "hit",
+        }
+
     async with client_from_session(
         data.session
     ) as client:
@@ -1277,9 +1334,16 @@ async def api_details(
             data.url,
         )
 
+        _api_cache_set(
+            cache_key,
+            details,
+            30 * 60,
+        )
+
         return {
             "ok": True,
             "details": details,
+            "cache": "miss",
         }
 
 
@@ -1287,6 +1351,19 @@ async def api_details(
 async def api_episodes(
     data: EpisodesRequest,
 ):
+    episode_cache_key = (
+        "episodes|"
+        + _session_cache_id(data.session)
+        + "|"
+        + data.url
+        + "|"
+        + str(data.translator_id)
+    )
+
+    cached = _api_cache_get(episode_cache_key)
+    if cached is not None:
+        return cached
+
     async with client_from_session(
         data.session
     ) as client:
@@ -1317,17 +1394,51 @@ async def api_episodes(
             )
         )
 
-        return {
+        result = {
             "ok": True,
             "seasons": seasons,
             "episodes": episodes,
         }
+
+        _api_cache_set(
+            "episodes|"
+            + _session_cache_id(data.session)
+            + "|"
+            + data.url
+            + "|"
+            + str(data.translator_id),
+            result,
+            15 * 60,
+        )
+
+        return result
 
 
 @app.post("/api/stream")
 async def api_stream(
     data: StreamRequest,
 ):
+    stream_cache_key = (
+        "stream|"
+        + _session_cache_id(data.session)
+        + "|"
+        + data.url
+        + "|"
+        + str(data.translator_id)
+        + "|"
+        + str(data.season or 0)
+        + "|"
+        + str(data.episode or 0)
+    )
+
+    cached = _api_cache_get(stream_cache_key)
+    if cached is not None:
+        return {
+            "ok": True,
+            **cached,
+            "cache": "hit",
+        }
+
     async with client_from_session(
         data.session
     ) as client:
@@ -1370,7 +1481,14 @@ async def api_stream(
             streams
         )
 
+        _api_cache_set(
+            stream_cache_key,
+            result,
+            8 * 60,
+        )
+
         return {
             "ok": True,
             **result,
+            "cache": "miss",
         }

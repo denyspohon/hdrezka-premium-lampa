@@ -5,7 +5,7 @@
   window.hdrezka_premium_lampa_ready = true;
 
   var API = '__API_BASE__';
-  var VERSION = '2.1.0';
+  var VERSION = '3.0.0';
   var AUTHOR = 'DENYS';
   var EDITION = 'DENYS EDITION';
   var COMPONENT = 'hdrezka_premium';
@@ -19,7 +19,11 @@
     rememberVoice: 'hdrezka_premium_remember_voice',
     continueMode: 'hdrezka_premium_continue',
     preferences: 'hdrezka_premium_preferences',
-    progress: 'hdrezka_premium_progress'
+    progress: 'hdrezka_premium_progress',
+    playback: 'hdrezka_denys_playback_v3',
+    resumeMode: 'hdrezka_premium_resume_mode',
+    watchedAt: 'hdrezka_premium_watched_at',
+    showProgress: 'hdrezka_premium_show_progress'
   };
 
   function notice(text) {
@@ -424,6 +428,297 @@
       });
   }
 
+
+  /*
+    ============================================================
+    DENYS PLAYBACK ENGINE v3
+    ============================================================
+    Не надеемся только на Lampa.Timeline.handler.
+    Берём фактический currentTime у HTML5 video и сохраняем его
+    каждые ~2 секунды + на pause/seeking/destroy/ended.
+    Параллельно обновляем нативный Lampa.Timeline.
+  */
+  var DenysPlayback = (function () {
+    var active = null;
+    var video = null;
+    var handlers = null;
+    var pollTimer = null;
+    var saveTimer = null;
+    var bindAttempts = 0;
+    var resumeApplied = false;
+
+    function savedMap() {
+      return readJson(STORAGE.playback);
+    }
+
+    function getSaved(key) {
+      var all = savedMap();
+      return all[key] || {};
+    }
+
+    function getVideo() {
+      var v = null;
+
+      try {
+        if (
+          Lampa.Player &&
+          typeof Lampa.Player.video === 'function'
+        ) {
+          v = Lampa.Player.video();
+        }
+      } catch (e) {}
+
+      if (!v || typeof v.currentTime === 'undefined') {
+        try {
+          v = document.querySelector('.player video') ||
+              document.querySelector('video');
+        } catch (e) {}
+      }
+
+      return v && typeof v.currentTime !== 'undefined' ? v : null;
+    }
+
+    function threshold() {
+      var n = parseInt(setting(STORAGE.watchedAt, '95'), 10);
+      return n >= 70 && n <= 100 ? n : 95;
+    }
+
+    function snapshot(forcePercent) {
+      if (!active) return null;
+
+      var v = video || getVideo();
+      var old = getSaved(active.key);
+
+      var time = old.time || 0;
+      var duration = old.duration || 0;
+
+      try {
+        if (v) {
+          if (isFinite(v.currentTime)) time = Math.max(0, Number(v.currentTime) || 0);
+          if (isFinite(v.duration)) duration = Math.max(0, Number(v.duration) || 0);
+        }
+      } catch (e) {}
+
+      var percent = duration > 0 ? Math.max(0, Math.min(100, time / duration * 100)) : (old.percent || 0);
+      if (typeof forcePercent === 'number') percent = forcePercent;
+
+      return {
+        time: time,
+        duration: duration,
+        percent: percent,
+        completed: percent >= threshold(),
+        updated: Date.now(),
+        season: active.season || null,
+        episode: active.episode || null,
+        title: active.title || '',
+        voice: active.voice || ''
+      };
+    }
+
+    function persist(forcePercent) {
+      if (!active) return;
+
+      var data = snapshot(forcePercent);
+      if (!data) return;
+
+      var all = savedMap();
+      all[active.key] = data;
+      writeJson(STORAGE.playback, all);
+
+      try {
+        if (
+          active.timelineHash &&
+          Lampa.Timeline &&
+          Lampa.Timeline.update
+        ) {
+          Lampa.Timeline.update({
+            hash: active.timelineHash,
+            percent: data.percent,
+            time: data.time,
+            duration: data.duration,
+            received: true
+          });
+        }
+      } catch (e) {}
+
+      try {
+        if (active.onProgress) active.onProgress(data);
+      } catch (e) {}
+    }
+
+    function applyResume() {
+      if (!active || resumeApplied) return;
+      if (setting(STORAGE.resumeMode, '1') !== '1') return;
+
+      var v = video || getVideo();
+      if (!v) return;
+
+      var saved = getSaved(active.key);
+      var time = Number(saved.time || active.resumeTime || 0);
+      var percent = Number(saved.percent || 0);
+
+      if (!(time > 8) || percent >= threshold()) {
+        resumeApplied = true;
+        return;
+      }
+
+      try {
+        var duration = Number(v.duration || saved.duration || 0);
+        if (duration > 0 && time >= duration - 10) {
+          resumeApplied = true;
+          return;
+        }
+
+        /*
+          currentTime ставим сами. Это работает даже на сборках Lampa,
+          где поле player.position не применяется.
+        */
+        v.currentTime = time;
+        resumeApplied = true;
+        notice('▶ Продолжаем с ' + Lampa.Utils.secondsToTime(time, true));
+      } catch (e) {}
+    }
+
+    function detach() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+
+      if (saveTimer) {
+        clearInterval(saveTimer);
+        saveTimer = null;
+      }
+
+      if (video && handlers) {
+        try { video.removeEventListener('loadedmetadata', handlers.loaded); } catch (e) {}
+        try { video.removeEventListener('canplay', handlers.canplay); } catch (e) {}
+        try { video.removeEventListener('timeupdate', handlers.timeupdate); } catch (e) {}
+        try { video.removeEventListener('pause', handlers.pause); } catch (e) {}
+        try { video.removeEventListener('seeking', handlers.seeking); } catch (e) {}
+        try { video.removeEventListener('ended', handlers.ended); } catch (e) {}
+      }
+
+      video = null;
+      handlers = null;
+      bindAttempts = 0;
+      resumeApplied = false;
+    }
+
+    function bindVideo() {
+      if (!active) return false;
+
+      var v = getVideo();
+      if (!v) return false;
+
+      if (video === v && handlers) {
+        applyResume();
+        return true;
+      }
+
+      if (video && handlers) {
+        try { persist(); } catch (e) {}
+      }
+
+      video = v;
+      resumeApplied = false;
+
+      var lastTimeUpdate = 0;
+
+      handlers = {
+        loaded: function () {
+          setTimeout(applyResume, 100);
+          setTimeout(applyResume, 500);
+        },
+        canplay: function () {
+          setTimeout(applyResume, 100);
+        },
+        timeupdate: function () {
+          var now = Date.now();
+          if (now - lastTimeUpdate > 1800) {
+            lastTimeUpdate = now;
+            persist();
+          }
+        },
+        pause: function () {
+          persist();
+        },
+        seeking: function () {
+          setTimeout(function () { persist(); }, 250);
+        },
+        ended: function () {
+          persist(100);
+          var callback = active && active.onEnded;
+          setTimeout(function () {
+            try { if (callback) callback(); } catch (e) {}
+          }, 350);
+        }
+      };
+
+      try { video.addEventListener('loadedmetadata', handlers.loaded); } catch (e) {}
+      try { video.addEventListener('canplay', handlers.canplay); } catch (e) {}
+      try { video.addEventListener('timeupdate', handlers.timeupdate); } catch (e) {}
+      try { video.addEventListener('pause', handlers.pause); } catch (e) {}
+      try { video.addEventListener('seeking', handlers.seeking); } catch (e) {}
+      try { video.addEventListener('ended', handlers.ended); } catch (e) {}
+
+      saveTimer = setInterval(function () {
+        persist();
+      }, 2500);
+
+      setTimeout(applyResume, 250);
+      setTimeout(applyResume, 900);
+      setTimeout(applyResume, 1800);
+
+      return true;
+    }
+
+    function arm(context) {
+      try { persist(); } catch (e) {}
+      detach();
+
+      active = context;
+      bindAttempts = 0;
+
+      /*
+        Player.play может создать <video> не сразу, поэтому ждём до 15 сек.
+      */
+      pollTimer = setInterval(function () {
+        bindAttempts++;
+        if (bindVideo() || bindAttempts > 60) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      }, 250);
+
+      setTimeout(bindVideo, 0);
+      setTimeout(bindVideo, 300);
+      setTimeout(bindVideo, 1000);
+    }
+
+    function playerStarted() {
+      if (!active) return;
+      setTimeout(bindVideo, 50);
+      setTimeout(bindVideo, 400);
+      setTimeout(bindVideo, 1200);
+    }
+
+    function playerDestroyed() {
+      try { persist(); } catch (e) {}
+      detach();
+      active = null;
+    }
+
+    return {
+      arm: arm,
+      started: playerStarted,
+      destroyed: playerDestroyed,
+      save: persist,
+      getSaved: getSaved,
+      threshold: threshold
+    };
+  })();
+
   function addSettings() {
     if (!Lampa.SettingsApi) return;
 
@@ -585,6 +880,86 @@
 
         description:
           'Помечает последнюю запущенную серию и возвращает к её сезону'
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
+          STORAGE.resumeMode,
+        type:
+          'select',
+        values: {
+          '1': 'Автоматически',
+          '0': 'Всегда с начала'
+        },
+        default:
+          '1'
+      },
+
+      field: {
+        name:
+          'Продолжение по таймкоду',
+
+        description:
+          'Сохраняет реальную позицию видео каждые ~2 секунды'
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
+          STORAGE.watchedAt,
+        type:
+          'select',
+        values: {
+          '85': '85%',
+          '90': '90%',
+          '95': '95%',
+          '98': '98%'
+        },
+        default:
+          '95'
+      },
+
+      field: {
+        name:
+          'Считать просмотренным после',
+
+        description:
+          'После этого процента показывается ✓ Просмотрено'
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
+          STORAGE.showProgress,
+        type:
+          'select',
+        values: {
+          '1': 'Да',
+          '0': 'Нет'
+        },
+        default:
+          '1'
+      },
+
+      field: {
+        name:
+          'Показывать прогресс',
+
+        description:
+          'Процент, таймкод и полоска прямо в списке серий'
       }
     });
 
@@ -830,96 +1205,109 @@
       );
     }
 
-    function timelineHash(episode) {
-      var title =
-        timelineBaseTitle();
+    function mediaProgressKey(episode) {
+      var base =
+        preferenceKey();
 
       if (
         details &&
         details.is_series &&
         episode
       ) {
-        var season =
-          episode.season_id ||
-          (
-            currentSeason() &&
-            currentSeason().id
-          ) ||
-          1;
-
-        var ep =
-          episode.episode_id ||
-          episode.episode ||
-          1;
-
-        var separator =
-          parseInt(season, 10) > 10
-            ? ':'
-            : '';
-
-        return Lampa.Utils.hash(
-          [
-            season,
-            separator,
-            ep,
-            title
-          ].join('')
+        return (
+          base +
+          '|s' +
+          String(episode.season_id || 1) +
+          '|e' +
+          String(episode.episode_id || 1)
         );
       }
 
+      return base + '|movie';
+    }
+
+    function timelineHash(episode) {
       return Lampa.Utils.hash(
-        title
+        'hdrezka-denys-v3|' +
+        mediaProgressKey(episode)
       );
     }
 
     function timelineView(episode) {
+      var hash =
+        timelineHash(episode);
+
+      var own =
+        DenysPlayback.getSaved(
+          mediaProgressKey(episode)
+        ) || {};
+
       try {
-        return Lampa.Timeline.view(
-          timelineHash(episode)
-        );
+        if (
+          own.updated &&
+          Lampa.Timeline &&
+          Lampa.Timeline.update
+        ) {
+          Lampa.Timeline.update({
+            hash: hash,
+            percent: Number(own.percent || 0),
+            time: Number(own.time || 0),
+            duration: Number(own.duration || 0),
+            received: true
+          });
+        }
+
+        return Lampa.Timeline.view(hash);
       }
       catch (e) {
         return {
-          hash:
-            timelineHash(episode),
-
-          percent:
-            0,
-
-          time:
-            0,
-
-          duration:
-            0
+          hash: hash,
+          percent: Number(own.percent || 0),
+          time: Number(own.time || 0),
+          duration: Number(own.duration || 0)
         };
       }
     }
 
-    function timelineRoad(view) {
-      if (!view) {
+    function timelineRoad(view, episode) {
+      var nativeRoad = {
+        percent: 0,
+        time: 0,
+        duration: 0
+      };
+
+      if (view) {
+        nativeRoad.percent =
+          parseFloat(view.percent || 0) || 0;
+        nativeRoad.time =
+          parseFloat(view.time || 0) || 0;
+        nativeRoad.duration =
+          parseFloat(view.duration || 0) || 0;
+      }
+
+      var own =
+        DenysPlayback.getSaved(
+          mediaProgressKey(episode)
+        ) || {};
+
+      /*
+        Наш фактический currentTime приоритетнее, потому что он берётся
+        прямо из <video>, а не зависит от реализации Timeline в сборке Lampa.
+      */
+      if (
+        Number(own.updated || 0) > 0
+      ) {
         return {
-          percent: 0,
-          time: 0,
-          duration: 0
+          percent:
+            parseFloat(own.percent || 0) || 0,
+          time:
+            parseFloat(own.time || 0) || 0,
+          duration:
+            parseFloat(own.duration || 0) || 0
         };
       }
 
-      return {
-        percent:
-          parseFloat(
-            view.percent || 0
-          ) || 0,
-
-        time:
-          parseFloat(
-            view.time || 0
-          ) || 0,
-
-        duration:
-          parseFloat(
-            view.duration || 0
-          ) || 0
-      };
+      return nativeRoad;
     }
 
     function nextEpisodeAfter(episode) {
@@ -2051,7 +2439,10 @@
 
             var road =
               timelineRoad(
-                timeline
+                timeline,
+                details.is_series
+                  ? episode
+                  : null
               );
 
             var progress =
@@ -2104,7 +2495,7 @@
             if (
               road.duration > 0 &&
               road.percent > 0 &&
-              road.percent < 92
+              road.percent < DenysPlayback.threshold()
             ) {
               try {
                 progressInfo =
@@ -2128,7 +2519,7 @@
               }
             }
             else if (
-              road.percent >= 92
+              road.percent >= DenysPlayback.threshold()
             ) {
               progressInfo =
                 ' • ✓ ПРОСМОТРЕНО';
@@ -2172,6 +2563,10 @@
             */
             try {
               if (
+                setting(
+                  STORAGE.showProgress,
+                  '1'
+                ) === '1' &&
                 Lampa.Timeline &&
                 Lampa.Timeline.render
               ) {
@@ -2199,7 +2594,7 @@
               }
 
               if (
-                road.percent >= 92
+                road.percent >= DenysPlayback.threshold()
               ) {
                 item.append(
                   '<div class="torrent-item__viewed">' +
@@ -2315,13 +2710,26 @@
                     }
                     catch (e) {}
 
+                    var exactSaved =
+                      DenysPlayback.getSaved(
+                        mediaProgressKey(
+                          details.is_series
+                            ? episode
+                            : null
+                        )
+                      );
+
                     var resumePosition =
                       (
-                        timeline &&
-                        timeline.time &&
-                        timeline.percent < 92
+                        setting(
+                          STORAGE.resumeMode,
+                          '1'
+                        ) === '1' &&
+                        exactSaved &&
+                        Number(exactSaved.time || 0) > 8 &&
+                        Number(exactSaved.percent || 0) < DenysPlayback.threshold()
                       )
-                        ? timeline.time
+                        ? Number(exactSaved.time || 0)
                         : -1;
 
                     var first = {
@@ -2377,6 +2785,55 @@
                     first.playlist = [
                       first
                     ];
+
+                    DenysPlayback.arm({
+                      key:
+                        mediaProgressKey(
+                          details.is_series
+                            ? episode
+                            : null
+                        ),
+
+                      timelineHash:
+                        timelineHash(
+                          details.is_series
+                            ? episode
+                            : null
+                        ),
+
+                      resumeTime:
+                        resumePosition > 0
+                          ? resumePosition
+                          : 0,
+
+                      title:
+                        title,
+
+                      voice:
+                        voice && voice.name
+                          ? voice.name
+                          : '',
+
+                      season:
+                        details.is_series && season
+                          ? season.id
+                          : null,
+
+                      episode:
+                        details.is_series
+                          ? episode.episode_id
+                          : null,
+
+                      onProgress:
+                        function (snapshot) {
+                          saveTimelineProgress(
+                            details.is_series
+                              ? episode
+                              : null,
+                            snapshot
+                          );
+                        }
+                    });
 
                     Lampa.Player.play(
                       first
@@ -2758,44 +3215,33 @@
 
   function installProgressSafety() {
     if (
-      window.hdrezka_denys_progress_safety
+      window.hdrezka_denys_progress_safety_v3
     ) {
       return;
     }
 
-    window.hdrezka_denys_progress_safety =
+    window.hdrezka_denys_progress_safety_v3 =
       true;
 
-    /*
-      Lampa сама обновляет timeline во время просмотра.
-      Этот listener нужен как дополнительная страховка:
-      при внешнем/особом плеере данные всё равно остаются
-      в стандартном Timeline-хранилище Lampa.
-    */
     try {
       if (
-        Lampa.Timeline &&
-        Lampa.Timeline.listener
+        Lampa.Player &&
+        Lampa.Player.listener
       ) {
-        Lampa.Timeline.listener.follow(
-          'update',
-          function (e) {
-            try {
-              if (
-                !e ||
-                !e.data ||
-                !e.data.hash
-              ) {
-                return;
-              }
+        Lampa.Player.listener.follow(
+          'start',
+          function () {
+            DenysPlayback.started();
+          }
+        );
 
-              /*
-                Ничего не перезаписываем вручную —
-                сам факт listener здесь важен только
-                для совместимости и будущей синхронизации.
-              */
-            }
-            catch (err) {}
+        Lampa.Player.listener.follow(
+          'destroy',
+          function () {
+            /*
+              Перед уничтожением забираем последний currentTime.
+            */
+            DenysPlayback.destroyed();
           }
         );
       }
