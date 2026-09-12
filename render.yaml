@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: hdrezka-premium-lampa
+    runtime: docker
+    autoDeploy: true
+    healthCheckPath: /health
