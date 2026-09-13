@@ -5,7 +5,7 @@
   window.hdrezka_premium_lampa_ready = true;
 
   var API = '__API_BASE__';
-  var VERSION = '4.0.0';
+  var VERSION = '4.1.0';
   var AUTHOR = 'DENYS';
   var EDITION = 'DENYS EDITION';
   var COMPONENT = 'hdrezka_premium';
@@ -27,8 +27,12 @@
     playerMode: 'hdrezka_premium_player_mode',
     autoNext: 'hdrezka_premium_auto_next',
     prefetchNext: 'hdrezka_premium_prefetch_next',
-    focusContinue: 'hdrezka_premium_focus_continue'
+    focusContinue: 'hdrezka_premium_focus_continue',
+    tvNetMode: 'hdrezka_premium_tv_net_mode'
   };
+
+  var NETWORK_EDITION =
+    'TV SAFE';
 
   function notice(text) {
     try {
@@ -177,130 +181,576 @@
     );
   }
 
-  function rawPost(path, data, attempt) {
-    attempt = attempt || 0;
+  function formEncode(data) {
+    var rows = [];
 
-    var wakeTimer = setTimeout(
-      function () {
-        wakeStatus(
-          '● Сервер просыпается…'
-        );
+    data =
+      data ||
+      {};
 
-        if (attempt === 0) {
-          notice(
-            'HDREZKA: сервер просыпается, подождите…'
-          );
-        }
-      },
-      2500
-    );
-
-    return fetch(
-      API + path,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type':
-            'application/json'
-        },
-        body: JSON.stringify(
-          data || {}
-        )
-      }
-    )
-      .then(function (response) {
-        clearTimeout(wakeTimer);
-
-        return response
-          .text()
-          .then(function (text) {
-            var json = null;
-
-            try {
-              json = JSON.parse(text);
-            } catch (e) {}
-
-            if (!response.ok) {
-              var error = new Error(
-                (
-                  json &&
-                  json.detail
-                ) ||
-                (
-                  json &&
-                  json.error
-                ) ||
-                (
-                  'HTTP ' +
-                  response.status
-                )
-              );
-
-              error.status =
-                response.status;
-
-              throw error;
-            }
-
-            wakeStatus(
-              '● Сервер online'
-            );
-
-            return json;
-          });
-      })
-      .catch(function (error) {
-        clearTimeout(wakeTimer);
-
-        var status =
-          error &&
-          error.status
-            ? error.status
-            : 0;
-
-        var retryable =
-          !status ||
-          status === 408 ||
-          status === 429 ||
-          status === 500 ||
-          status === 502 ||
-          status === 503 ||
-          status === 504;
+    Object.keys(
+      data
+    ).forEach(
+      function (key) {
+        var val =
+          data[key];
 
         if (
-          retryable &&
-          attempt < 2
+          val === null ||
+          typeof val === 'undefined'
         ) {
-          wakeStatus(
-            '● Повтор подключения…'
+          val = '';
+        }
+
+        rows.push(
+          encodeURIComponent(
+            key
+          ) +
+          '=' +
+          encodeURIComponent(
+            String(val)
+          )
+        );
+      }
+    );
+
+    return rows.join('&');
+  }
+
+  function tvPath(path) {
+    if (
+      path.indexOf('/api/') === 0
+    ) {
+      return (
+        '/tv/' +
+        path.substr(5)
+      );
+    }
+
+    return path;
+  }
+
+  function networkErrorText(
+    xhr,
+    exception
+  ) {
+    var body =
+      null;
+
+    try {
+      if (
+        xhr &&
+        xhr.responseJSON
+      ) {
+        body =
+          xhr.responseJSON;
+      }
+      else if (
+        xhr &&
+        xhr.responseText
+      ) {
+        body =
+          JSON.parse(
+            xhr.responseText
+          );
+      }
+    }
+    catch (e) {}
+
+    if (
+      body &&
+      (
+        body.detail ||
+        body.error
+      )
+    ) {
+      return (
+        body.detail ||
+        body.error
+      );
+    }
+
+    if (
+      xhr &&
+      xhr.decode_error
+    ) {
+      return xhr.decode_error;
+    }
+
+    if (
+      xhr &&
+      xhr.status
+    ) {
+      return (
+        'HTTP ' +
+        xhr.status
+      );
+    }
+
+    return (
+      exception ||
+      'Ошибка сети TV'
+    );
+  }
+
+  /*
+    ============================================================
+    TV SAFE NETWORK v4.1
+    ============================================================
+
+    Старые версии использовали browser fetch().
+    На ПК это работало, но Media Station X / старые TV WebView
+    могут вести себя иначе.
+
+    Теперь запросы идут через НАТИВНЫЙ сетевой слой самой Lampa:
+      Lampa.Reguest().native()
+
+    На Android Lampa сама переводит native() в Android.httpReq.
+    На WebOS/Tizen/MSX/web используется совместимый AJAX путь Lampa.
+
+    Данные отправляются как обычный application/x-www-form-urlencoded,
+    то есть без JSON CORS-preflight.
+  */
+  function rawPost(
+    path,
+    data,
+    attempt
+  ) {
+    attempt =
+      attempt ||
+      0;
+
+    return new Promise(
+      function (
+        resolve,
+        reject
+      ) {
+        var finished =
+          false;
+
+        var endpoint =
+          API +
+          tvPath(
+            path
           );
 
-          return new Promise(
-            function (resolve) {
-              setTimeout(
-                resolve,
-                attempt === 0
-                  ? 1500
-                  : 3000
-              );
-            }
-          ).then(
+        var wakeTimer =
+          setTimeout(
             function () {
-              return rawPost(
-                path,
-                data,
-                attempt + 1
+              wakeStatus(
+                '● TV SAFE • сервер просыпается…'
               );
+
+              if (
+                attempt === 0
+              ) {
+                notice(
+                  'HDREZKA: подключаем TV к серверу…'
+                );
+              }
+            },
+            2500
+          );
+
+        function finishOk(
+          result
+        ) {
+          if (finished) return;
+
+          finished =
+            true;
+
+          clearTimeout(
+            wakeTimer
+          );
+
+          if (
+            typeof result ===
+            'string'
+          ) {
+            try {
+              result =
+                JSON.parse(
+                  result
+                );
             }
+            catch (e) {}
+          }
+
+          if (
+            result &&
+            (
+              result.detail ||
+              result.error
+            ) &&
+            result.ok === false
+          ) {
+            finishError(
+              {
+                responseJSON:
+                  result,
+                status:
+                  result.status ||
+                  500
+              },
+              'server'
+            );
+
+            return;
+          }
+
+          wakeStatus(
+            '● TV SAFE • сервер online'
+          );
+
+          resolve(
+            result
           );
         }
 
-        wakeStatus(
-          '● Ошибка соединения'
-        );
+        function finishError(
+          xhr,
+          exception
+        ) {
+          if (finished) return;
 
-        throw error;
-      });
+          clearTimeout(
+            wakeTimer
+          );
+
+          var status =
+            xhr &&
+            xhr.status
+              ? Number(
+                  xhr.status
+                )
+              : 0;
+
+          var retryable =
+            !status ||
+            status === 408 ||
+            status === 429 ||
+            status === 500 ||
+            status === 502 ||
+            status === 503 ||
+            status === 504;
+
+          if (
+            retryable &&
+            attempt < 2
+          ) {
+            finished =
+              true;
+
+            wakeStatus(
+              '● TV SAFE • повтор подключения…'
+            );
+
+            setTimeout(
+              function () {
+                rawPost(
+                  path,
+                  data,
+                  attempt + 1
+                )
+                  .then(
+                    resolve
+                  )
+                  .catch(
+                    reject
+                  );
+              },
+              attempt === 0
+                ? 1400
+                : 2800
+            );
+
+            return;
+          }
+
+          finished =
+            true;
+
+          wakeStatus(
+            '● TV SAFE • ошибка сети'
+          );
+
+          var error =
+            new Error(
+              networkErrorText(
+                xhr,
+                exception
+              )
+            );
+
+          error.status =
+            status;
+
+          reject(
+            error
+          );
+        }
+
+        /*
+          №1 — официальный сетевой слой Lampa.
+        */
+        try {
+          if (
+            window.Lampa &&
+            Lampa.Reguest
+          ) {
+            var network =
+              new Lampa.Reguest();
+
+            network.timeout(
+              65000
+            );
+
+            network.native(
+              endpoint,
+              finishOk,
+              finishError,
+              data || {},
+              {
+                type:
+                  'POST',
+
+                dataType:
+                  'json',
+
+                timeout:
+                  65000
+              }
+            );
+
+            return;
+          }
+        }
+        catch (e) {
+          /*
+            Если конкретная старая сборка не имеет Reguest,
+            идём через самый совместимый XMLHttpRequest.
+          */
+        }
+
+        /*
+          №2 — fallback без fetch(), тоже без JSON preflight.
+        */
+        try {
+          var xhr =
+            new XMLHttpRequest();
+
+          xhr.open(
+            'POST',
+            endpoint,
+            true
+          );
+
+          xhr.timeout =
+            65000;
+
+          xhr.setRequestHeader(
+            'Content-Type',
+            'application/x-www-form-urlencoded; charset=UTF-8'
+          );
+
+          xhr.onreadystatechange =
+            function () {
+              if (
+                xhr.readyState !== 4
+              ) {
+                return;
+              }
+
+              if (
+                xhr.status >= 200 &&
+                xhr.status < 300
+              ) {
+                var result =
+                  xhr.responseText;
+
+                try {
+                  result =
+                    JSON.parse(
+                      result
+                    );
+                }
+                catch (e) {}
+
+                finishOk(
+                  result
+                );
+              }
+              else {
+                finishError(
+                  xhr,
+                  'xhr'
+                );
+              }
+            };
+
+          xhr.ontimeout =
+            function () {
+              finishError(
+                xhr,
+                'timeout'
+              );
+            };
+
+          xhr.onerror =
+            function () {
+              finishError(
+                xhr,
+                'network'
+              );
+            };
+
+          xhr.send(
+            formEncode(
+              data ||
+              {}
+            )
+          );
+        }
+        catch (error) {
+          finishError(
+            {
+              status:
+                0,
+              message:
+                error.message
+            },
+            error.message
+          );
+        }
+      }
+    );
+  }
+
+  function tvPing() {
+    return new Promise(
+      function (
+        resolve,
+        reject
+      ) {
+        var endpoint =
+          API +
+          '/tv/ping';
+
+        try {
+          if (
+            window.Lampa &&
+            Lampa.Reguest
+          ) {
+            var network =
+              new Lampa.Reguest();
+
+            network.timeout(
+              30000
+            );
+
+            network.native(
+              endpoint,
+              function (data) {
+                resolve(
+                  data
+                );
+              },
+              function (
+                xhr,
+                exception
+              ) {
+                reject(
+                  new Error(
+                    networkErrorText(
+                      xhr,
+                      exception
+                    )
+                  )
+                );
+              },
+              false,
+              {
+                type:
+                  'GET',
+                dataType:
+                  'json',
+                timeout:
+                  30000
+              }
+            );
+
+            return;
+          }
+        }
+        catch (e) {}
+
+        try {
+          var xhr =
+            new XMLHttpRequest();
+
+          xhr.open(
+            'GET',
+            endpoint,
+            true
+          );
+
+          xhr.timeout =
+            30000;
+
+          xhr.onreadystatechange =
+            function () {
+              if (
+                xhr.readyState !== 4
+              ) {
+                return;
+              }
+
+              if (
+                xhr.status >= 200 &&
+                xhr.status < 300
+              ) {
+                try {
+                  resolve(
+                    JSON.parse(
+                      xhr.responseText
+                    )
+                  );
+                }
+                catch (e) {
+                  reject(
+                    e
+                  );
+                }
+              }
+              else {
+                reject(
+                  new Error(
+                    'HTTP ' +
+                    xhr.status
+                  )
+                );
+              }
+            };
+
+          xhr.onerror =
+            function () {
+              reject(
+                new Error(
+                  'TV network error'
+                )
+              );
+            };
+
+          xhr.send();
+        }
+        catch (e) {
+          reject(
+            e
+          );
+        }
+      }
+    );
   }
 
   function login() {
@@ -732,7 +1182,7 @@
           'hdrezka_premium_settings',
 
         name:
-          'HDREZKA Premium • by DENYS',
+          'HDREZKA Premium • by DENYS • TV SAFE',
 
         icon:
           '<svg width="24" height="24" viewBox="0 0 24 24">' +
@@ -1089,6 +1539,63 @@
 
       param: {
         name:
+          'hdrezka_premium_tv_test',
+        type:
+          'button'
+      },
+
+      field: {
+        name:
+          'Проверить соединение TV',
+
+        description:
+          'TV SAFE: проверяет Media Station X / WebOS / Tizen / Android без запуска фильма'
+      },
+
+      onChange:
+        function () {
+          notice(
+            'HDREZKA: проверяем TV-соединение…'
+          );
+
+          tvPing()
+            .then(
+              function (data) {
+                notice(
+                  '✅ TV SAFE OK • v' +
+                  (
+                    data &&
+                    data.version ||
+                    VERSION
+                  )
+                );
+
+                wakeStatus(
+                  '● TV SAFE • соединение OK'
+                );
+              }
+            )
+            .catch(
+              function (error) {
+                notice(
+                  '❌ TV SAFE: ' +
+                  error.message
+                );
+
+                wakeStatus(
+                  '● TV SAFE • соединение не прошло'
+                );
+              }
+            );
+        }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
           'hdrezka_premium_denys_edition',
         type:
           'select',
@@ -1106,7 +1613,7 @@
           'Автор',
 
         description:
-          'HDREZKA Premium for Lampa • by DENYS'
+          'HDREZKA Premium for Lampa • by DENYS • TV SAFE'
       }
     });
 
@@ -3743,7 +4250,7 @@
 
     Lampa.Activity.push({
       url: '',
-      title: 'HDREZKA Premium • by DENYS',
+      title: 'HDREZKA Premium • by DENYS • TV SAFE',
       component: COMPONENT,
       search:
         movie.title ||
@@ -3869,7 +4376,7 @@
           VERSION,
 
         name:
-          'HDREZKA Premium • by DENYS',
+          'HDREZKA Premium • by DENYS • TV SAFE',
 
         description:
           'Premium HDRezka с вашим аккаунтом • DENYS EDITION',
@@ -3881,7 +4388,7 @@
           function () {
             return {
               name:
-                'HDREZKA Premium • by DENYS',
+                'HDREZKA Premium • by DENYS • TV SAFE',
 
               description:
                 'Ваш аккаунт HDRezka'

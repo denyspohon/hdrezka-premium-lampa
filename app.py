@@ -8,7 +8,7 @@ import time
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, parse_qs
 
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Request
@@ -20,7 +20,7 @@ from hdrezka import HDRezkaClient
 from hdrezka.stream.player import PlayerSeries
 
 
-APP_VERSION = "4.0.0"
+APP_VERSION = "4.1.0"
 AUTHOR = "DENYS"
 STARTED_AT = time.time()
 
@@ -1034,6 +1034,285 @@ async def unhandled_exception(
                 f"{exc}"
             ),
         },
+    )
+
+
+
+async def _tv_payload(
+    request: Request,
+) -> dict[str, str]:
+    """
+    Compatibility transport for old TV WebViews / Media Station X.
+
+    The Lampa plugin sends a simple form-urlencoded POST so the TV does
+    not need browser fetch() and does not need an application/json
+    CORS preflight.
+    """
+    raw = (
+        await request.body()
+    ).decode(
+        "utf-8",
+        errors="replace",
+    )
+
+    content_type = (
+        request.headers.get(
+            "content-type",
+            "",
+        )
+        or ""
+    ).lower()
+
+    if (
+        "application/json"
+        in content_type
+        or raw.lstrip().startswith("{")
+    ):
+        try:
+            data = json.loads(
+                raw or "{}"
+            )
+
+            if isinstance(
+                data,
+                dict,
+            ):
+                return {
+                    str(k):
+                        ""
+                        if v is None
+                        else str(v)
+                    for k, v
+                    in data.items()
+                }
+        except Exception:
+            pass
+
+    parsed = parse_qs(
+        raw,
+        keep_blank_values=True,
+    )
+
+    return {
+        str(key):
+            str(values[-1])
+            if values
+            else ""
+        for key, values
+        in parsed.items()
+    }
+
+
+def _tv_int(
+    value: str | None,
+) -> int | None:
+    if (
+        value is None
+        or str(value).strip() == ""
+    ):
+        return None
+
+    try:
+        return int(
+            str(value).strip()
+        )
+    except Exception:
+        return None
+
+
+@app.get("/tv/ping")
+async def tv_ping(
+    request: Request,
+):
+    return {
+        "ok": True,
+        "version": APP_VERSION,
+        "edition": "DENYS EDITION • TV SAFE",
+        "transport": "lampa-reguest/form-urlencoded",
+        "content_host": CONTENT_HOST,
+        "user_agent": (
+            request.headers.get(
+                "user-agent",
+                "",
+            )[:180]
+        ),
+    }
+
+
+@app.post("/tv/login")
+async def tv_login(
+    request: Request,
+):
+    data = await _tv_payload(
+        request
+    )
+
+    return await api_login(
+        LoginRequest(
+            login=data.get(
+                "login",
+                "",
+            ),
+            password=data.get(
+                "password",
+                "",
+            ),
+        )
+    )
+
+
+@app.post("/tv/status")
+async def tv_status(
+    request: Request,
+):
+    data = await _tv_payload(
+        request
+    )
+
+    return await api_status(
+        SessionRequest(
+            session=data.get(
+                "session",
+                "",
+            ),
+        )
+    )
+
+
+@app.post("/tv/resolve")
+async def tv_resolve(
+    request: Request,
+):
+    data = await _tv_payload(
+        request
+    )
+
+    return await api_resolve(
+        ResolveRequest(
+            session=data.get(
+                "session",
+                "",
+            ),
+            title=data.get(
+                "title",
+                "",
+            ),
+            original_title=data.get(
+                "original_title",
+                "",
+            ),
+            year=_tv_int(
+                data.get(
+                    "year"
+                )
+            ),
+        )
+    )
+
+
+@app.post("/tv/details")
+async def tv_details(
+    request: Request,
+):
+    data = await _tv_payload(
+        request
+    )
+
+    return await api_details(
+        DetailsRequest(
+            session=data.get(
+                "session",
+                "",
+            ),
+            url=data.get(
+                "url",
+                "",
+            ),
+        )
+    )
+
+
+@app.post("/tv/episodes")
+async def tv_episodes(
+    request: Request,
+):
+    data = await _tv_payload(
+        request
+    )
+
+    translator_id = (
+        _tv_int(
+            data.get(
+                "translator_id"
+            )
+        )
+    )
+
+    if translator_id is None:
+        raise HTTPException(
+            400,
+            "Не передана озвучка",
+        )
+
+    return await api_episodes(
+        EpisodesRequest(
+            session=data.get(
+                "session",
+                "",
+            ),
+            url=data.get(
+                "url",
+                "",
+            ),
+            translator_id=translator_id,
+        )
+    )
+
+
+@app.post("/tv/stream")
+async def tv_stream(
+    request: Request,
+):
+    data = await _tv_payload(
+        request
+    )
+
+    translator_id = (
+        _tv_int(
+            data.get(
+                "translator_id"
+            )
+        )
+    )
+
+    if translator_id is None:
+        raise HTTPException(
+            400,
+            "Не передана озвучка",
+        )
+
+    return await api_stream(
+        StreamRequest(
+            session=data.get(
+                "session",
+                "",
+            ),
+            url=data.get(
+                "url",
+                "",
+            ),
+            translator_id=translator_id,
+            season=_tv_int(
+                data.get(
+                    "season"
+                )
+            ),
+            episode=_tv_int(
+                data.get(
+                    "episode"
+                )
+            ),
+        )
     )
 
 
