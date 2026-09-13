@@ -1,0 +1,19 @@
+HDREZKA DENYS v8.0 local validation
+===================================
+Python syntax: OK
+JavaScript syntax: OK
+Anubis challenge parser: OK
+Anubis SHA-256 PoW: OK
+Mock Anubis pass + retry: OK
+Search parser: OK
+Movie parser: OK
+Series parser: OK
+Episode parser: OK
+Encrypted session roundtrip: OK
+FastAPI health: OK
+JSONP pair/start: OK
+JSONP callback validation: OK
+plugin.js API substitution: OK
+Native Timeline marker: OK
+Internal Lampa player marker: OK
+Lazy full playlist marker: OK

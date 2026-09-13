@@ -1,94 +1,200 @@
-HDREZKA Premium • DENYS ADAPTER v7.0
-=====================================
+HDREZKA Premium • DENYS EDITION v8.0
+====================================
 
-ЭТО ПОЛНАЯ СМЕНА ПОДХОДА.
+ЭТА ВЕРСИЯ СОБРАНА ОТ РАБОЧЕЙ v2.1, А НЕ ОТ v6/v7.
 
-v7 НЕ ДЕЛАЕТ:
-- собственный поиск HDRezka;
-- собственный CORS proxy;
-- собственный парсинг страницы;
-- собственный login;
-- собственный Timeline;
-- собственный playlist/player.
+Что было реально подтверждено:
+- v2/v2.1 уже умела искать и воспроизводить HDRezka на ПК;
+- текущая проблема backend -> Rezka: Rezka отдаёт страницу
+  «Проверяем, что вы не бот!»;
+- это текущая защита Anubis (proof-of-work), а не обычный Cloudflare/CORS;
+- текущий Lampac NextGen уже решает именно этот Anubis в своём модуле Rezka;
+- Media Station X имеет отдельную проблему с cross-origin XHR/fetch:
+  на форумах есть точные случаи Online Mod + HDRezka, где на ПК работает,
+  а внутри MSX вход пишет «нет подключения к сети».
 
-ВМЕСТО ЭТОГО v7 ИСПОЛЬЗУЕТ УЖЕ УСТАНОВЛЕННЫЙ ONLINE MOD.
+ПОЭТОМУ v8 РЕШАЕТ ДВЕ РАЗНЫЕ ПРОБЛЕМЫ РАЗДЕЛЬНО.
 
-Почему:
-актуальный Online Mod уже содержит источник rezka2 с:
-- рабочей логикой зеркал rezka.ag / kvk.zone;
-- proxyLink;
-- заполнением cookie через proxy;
-- engine/ajax/search.php;
-- get_episodes / get_stream / get_movie;
-- декодированием Rezka;
-- субтитрами и качествами;
-- Lampa.Timeline;
-- полноценным Lampa.Player.playlist;
-- NEXT/PREV;
-- контекстным меню;
-- сбросом таймкода;
-- выбором плеера;
-- копированием ссылки.
+1. BACKEND / REZKA / ANUBIS
+---------------------------
+Backend остаётся как в ранней рабочей версии: Lampa -> Render -> HDRezka.
+Но теперь Render умеет распознавать и решать текущую Anubis-защиту Rezka.
 
-ЧТО ДЕЛАЕТ DENYS ADAPTER
+Алгоритм повторяет текущую публичную реализацию Lampac NextGen:
+- читает <script id="anubis_challenge">;
+- берёт challenge.id, randomData, rules.difficulty;
+- решает SHA-256 proof-of-work;
+- устанавливает techaro.lol-anubis-cookie-verification;
+- вызывает /.within.website/x/cmd/anubis/api/pass-challenge;
+- повторяет исходный запрос уже с cookie.
+
+Затем Backend использует обычный browser TLS impersonation hdrezka 5.2.0.
+
+Мирроры пробуются автоматически:
+- rezka.ag (текущий default Lampac)
+- rezka-ua.tv (тот host, на котором ранняя DENYS-версия работала на ПК)
+- rezkery.com
+- hdrezka.ag
+- hdrezka.co
+- hdrzk.org
+- kvk.zone
+
+После успешного входа host фиксируется внутри сессии; запросы между разными
+зеркалами не мешаются.
+
+2. TV / VIDAA / MEDIA STATION X
+-------------------------------
+На ПК API вызывается обычным fetch, как в рабочей v2.1.
+
+На Media Station X / VIDAA API больше НЕ вызывается через XHR/fetch вообще.
+Используется JSONP — динамический <script src="...">.
+
+Это важно: Media Station X уже умеет загружать наш plugin.js с Render как
+cross-origin script, а script-тег не требует CORS/XHR разрешения.
+
+TV transport:
+Lampa/MSX
+  -> <script src="Render/jsonp/...">
+  -> Render
+  -> Rezka + Anubis
+  -> callback({...})
+
+Таким образом остаётся ваша ОБЫЧНАЯ Lampa со всеми Filmix/Online Mod/другими
+плагинами. Start Parameter MSX менять не нужно.
+
+3. БЕЗОПАСНЫЙ ВХОД НА TV
 ------------------------
-1. Добавляет отдельную красивую кнопку HDREZKA.
-2. Добавляет кнопку REZKA ✓ / ВОЙТИ.
-3. Перед запуском временно переключает Online Mod на balanser=rezka2.
-4. На VIDAA/MSX временно включает online_mod_proxy_rezka2=true.
-5. Вызывает РОДНУЮ кнопку Online Mod, поэтому запускается его собственный
-   loadOnline() со всеми checkMyIp / proxy / component init.
-6. Когда Online Mod activity уже создана, возвращает пользователю его прежние
-   настройки Online Mod, поэтому Filmix и другие источники не ломаются.
-7. Для входа открывает штатные настройки Online Mod HDRezka.
+На карточке фильма:
 
-ЗАВИСИМОСТЬ
-------------
-В обычной Lampa должен быть установлен актуальный Online Mod:
-https://nb557.github.io/plugins/online_mod.js
+HDREZKA    ВОЙТИ
 
-У пользователя он уже используется — именно поэтому этот вариант выбран.
+На телевизоре пароль НЕ вводится и НЕ кладётся в URL.
+
+Нажать ВОЙТИ:
+- TV получает короткий 6-символьный код;
+- показывает адрес /connect;
+- открыть этот адрес на телефоне/ПК;
+- ввести код + HDRezka login/password;
+- backend решает Anubis, логинится и создаёт зашифрованную Fernet-сессию;
+- TV получает только encrypted session token через JSONP;
+- пароль backend не сохраняет.
+
+После этого:
+
+HDREZKA    REZKA ✓
+
+Сессия stateless: cookies находятся только внутри зашифрованного токена.
+Каждый API-ответ может обновить токен, если Rezka обновила Anubis-cookie.
+
+4. ПОИСК / КАРТОЧКА / PREMIUM
+-----------------------------
+Больше не используется хрупкий client.player()/Post parser, который раньше
+падал на NoneType.
+
+- поиск: обычная /search/ + fallback engine/ajax/search.php;
+- карточка: безопасный HTML parser;
+- post id: URL /123-name.html + initCDN* fallback;
+- переводчики: #translators-list;
+- premium translator сохраняется;
+- series/movie определяется по initCDNSeriesEvents / initCDNMoviesEvents;
+- сезоны: ajax/get_cdn_series action=get_episodes;
+- серия: action=get_stream;
+- фильм: action=get_movie;
+- передаются is_camrip / is_ads / is_director / favs;
+- payload декодируется hdrezka 5.2.0 только на уровне URLs, без Post parser.
+
+5. ТАЙМКОД И ПЛЕЙЛИСТ
+---------------------
+Самодельные video.currentTime polling-хуки v3/v4 удалены.
+
+Используется родная схема официального Lampa Rezka plugin:
+- каждому фильму/эпизоду Lampa.Timeline.view(hash);
+- timeline передаётся прямо в Lampa.Player.play;
+- внутренний Lampa player принудительно для HDREZKA через launch_player='lampa';
+- player_timecode временно ставится в Continue/Ask/Again согласно настройке;
+- после выхода глобальная настройка пользователя возвращается;
+- Lampa сама обновляет percent/time/duration и вызывает timeline.handler.
+
+Сериал получает НАСТОЯЩИЙ lazy playlist ВСЕХ серий ВСЕХ сезонов:
+- Lampa.Player.play(first)
+- Lampa.Player.playlist(full_playlist)
+- URL следующей серии — function(call), как в официальном plugin/online/rezka.js;
+- NEXT/PREV;
+- Auto Next;
+- переход между сезонами;
+- prefetch следующей серии.
 
 УСТАНОВКА
 ---------
-1. Все файлы архива -> GitHub с заменой.
-2. Commit.
-3. Render -> Live.
-4. Вернуть/оставить обычную Lampa в Media Station X.
-5. Online Mod должен быть установлен как раньше.
-6. Удалить старые тестовые DENYS URL, оставить один:
+1. Распаковать архив.
+2. ВСЕ файлы загрузить в корень GitHub-репозитория с заменой.
+3. Commit.
+4. Дождаться Render -> Live.
+5. В вашей обычной Lampa удалить старые тестовые DENYS URL и добавить только:
 
-https://hdrezka-premium-lampa.onrender.com/plugin.js?v=70
+https://hdrezka-premium-lampa.onrender.com/plugin.js?v=80
 
-7. Полностью перезапустить Lampa / Media Station X.
+6. Полностью закрыть Media Station X / Lampa и открыть снова.
 
-ВХОД НА VIDAA / MSX
--------------------
-Нажать ВОЙТИ.
-DENYS откроет штатные настройки Online Mod.
+НЕ МЕНЯТЬ Start Parameter MSX.
+НЕ УДАЛЯТЬ Filmix / Online Mod / остальные плагины.
+Они остаются как раньше.
 
-Ввести:
-- Логин / email HDrezka
-- Пароль HDrezka
-
-Затем выбрать:
-- Заполнить куки для HDrezka
-
-Именно этот механизм Online Mod использует proxy/Set-Cookie и предназначен
-для платформ, где обычная браузерная авторизация недостаточна.
-
-После появления online_mod_rezka2_cookie кнопка DENYS покажет REZKA ✓.
-
-ВАЖНО
------
-Никаких данных аккаунта DENYS v7 отдельно не хранит.
-Он использует те же online_mod_rezka2_* storage, что сам Online Mod.
-
-ПРОВЕРКА RENDER
+ПЕРВАЯ ПРОВЕРКА
 ---------------
+ПК/телефон:
 https://hdrezka-premium-lampa.onrender.com/health
 
 Должно быть:
-version = 7.0.0
-mode = online-mod-adapter
-rezka_network_in_denys = false
+version = 8.0.0
+anubis_solver = true
+tv_transport = jsonp-script
+
+На TV:
+1. Открыть любую карточку.
+2. Нажать ВОЙТИ.
+3. Получить код.
+4. На телефоне открыть показанный /connect.
+5. Ввести код + аккаунт HDRezka.
+6. Дождаться REZKA ✓.
+7. Нажать HDREZKA.
+
+НАСТРОЙКИ
+---------
+Транспорт:
+Авто — JSONP на TV / fetch на ПК
+
+Таймкод:
+Автоматически продолжать
+
+Auto Next:
+Да
+
+Prefetch следующей серии:
+Да
+
+Качество:
+MAX или нужный предел
+
+ТЕСТЫ ПЕРЕД СБОРКОЙ АРХИВА
+--------------------------
+- Python py_compile: OK
+- Node --check plugin.js: OK
+- synthetic Anubis challenge parse: OK
+- Anubis SHA-256 PoW: OK
+- mock pass-challenge -> retry: OK
+- search parser: OK
+- movie/series parser: OK
+- encrypted session roundtrip: OK
+- JSONP pair/start route: OK
+- JSONP callback validation: OK
+- plugin.js API base substitution: OK
+- static player check: native Timeline + launch_player=lampa + lazy playlist: OK
+
+ВАЖНО
+-----
+Живой Rezka-запрос нельзя полноценно выполнить в локальном build-контейнере,
+потому что у него нет внешнего DNS/интернета. Поэтому мы не называем релиз
+«гарантированно проверенным на вашем аккаунте» до первого Render deploy.
+Но в отличие от предыдущих попыток, две известные причины уже закрыты кодом:
+Anubis на Rezka и XHR/CORS Media Station X.
