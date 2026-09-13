@@ -6,7 +6,7 @@
   window.hdrezka_premium_lampa_ready = true;
 
   var API = '__API_BASE__';
-  var VERSION = '5.0.0';
+  var VERSION = '5.1.0';
   var AUTHOR = 'DENYS';
   var EDITION = 'DENYS EDITION';
   var COMPONENT = 'hdrezka_premium';
@@ -4740,7 +4740,7 @@
           'HDREZKA Premium • by DENYS',
 
         description:
-          'HDRezka Premium • SAME-ORIGIN MSX • pairing • playlist • timeline • by DENYS',
+          'HDRezka Premium • DIRECT REZKA AJAX • SAME-ORIGIN MSX • by DENYS',
 
         component:
           COMPONENT,
@@ -4840,7 +4840,7 @@
 
       if (sameOrigin()) {
         wakeStatus(
-          '● SAME ORIGIN • готов'
+          '● DIRECT REZKA • SAME ORIGIN • готов'
         );
       }
 

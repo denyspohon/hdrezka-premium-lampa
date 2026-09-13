@@ -1,137 +1,49 @@
-HDREZKA Premium • DENYS EDITION v5.0 MSX SAME-ORIGIN
-========================================================
+HDREZKA Premium • DENYS EDITION v5.1 DIRECT REZKA
+===================================================
 
-ЭТО НЕ ЕЩЁ ОДИН CORS-ФИКС ПЛАГИНА.
+НАЙДЕНА КОНКРЕТНАЯ ПРИЧИНА ОШИБКИ
+----------------------------------
+Ошибка:
 
-v5 меняет саму архитектуру для Hisense VIDAA + Media Station X.
+TypeError: 'NoneType' object is not subscriptable
 
-ЧТО МЫ ВЫЯСНИЛИ ПО РЕАЛЬНЫМ ПЛАГИНАМ
--------------------------------------
-1. Filmix и Online Mod используют Lampa.Reguest, но для проблемных источников
-   Online Mod всё равно использует отдельные CORS proxy.
+шла из hdrezka.Post. В актуальном исходнике библиотека делает:
 
-2. На VIDAA функция Lampa.Reguest.native() НЕ является настоящим системным
-   HTTP-клиентом. Настоящий Android.httpReq включается только на Android.
-   На VIDAA остаётся браузерный AJAX.
+soup.find('meta', property='og:type')['content']
 
-3. Filmix для воспроизведения строит настоящий полный playlist и передаёт:
-   Lampa.Player.play(first)
-   Lampa.Player.playlist(playlist)
+без проверки на None.
 
-4. Lampa Timeline работает, когда каждому фильму/эпизоду передан
-   Lampa.Timeline.view(hash).
+Если Rezka отдаёт страницу входа, редирект или другой HTML без og:type,
+парсер падает именно с этой ошибкой.
 
-5. Официальная Lampa для Media Station X прямо предусматривает собственный
-   хостинг. Lampac использует ту же идею: MSX открывает Lampa с сервера,
-   где находится backend.
+v5.1 УБИРАЕТ ЭТО МЕСТО ИЗ РАБОЧЕГО ПОТОКА ПОЛНОСТЬЮ
+----------------------------------------------------
+- client.player() больше не используется для карточки, серий и потока.
+- Страница Rezka разбирается безопасно.
+- Используются те же ключевые маркеры, что в актуальном Online Mod:
+  .initCDNSeriesEvents(...)
+  .initCDNMoviesEvents(...)
+  #translators-list .b-translator__item[data-translator_id]
+- Серии идут напрямую через ajax/get_cdn_series action=get_episodes.
+- Сериал-поток: action=get_stream.
+- Фильм-поток: action=get_movie.
+- Абсолютная ссылка поиска не может увести Premium-сессию на другое зеркало:
+  путь сохраняется, host принудительно остаётся рабочим content host.
+- Если Rezka реально вернёт не страницу фильма, вместо Python TypeError
+  будет нормальная диагностика status/final URL/title/markers.
 
-ЧТО ДЕЛАЕТ v5
--------------
-Render теперь является одновременно:
+УСТАНОВКА
+---------
+Загрузить ВСЕ файлы архива в GitHub с заменой.
+Commit.
+Дождаться Render -> Live.
 
-  Media Station X
-       ↓
-  Lampa (официальная сборка)
-       ↓ SAME ORIGIN
-  HDREZKA plugin
-       ↓ SAME ORIGIN
-  FastAPI backend
-       ↓
-  HDRezka
-
-То есть страница Lampa и API имеют ОДИН домен:
-https://hdrezka-premium-lampa.onrender.com
-
-Cross-origin между Lampa и нашим backend больше вообще нет.
-
-ОФИЦИАЛЬНАЯ LAMPA
------------------
-Docker во время сборки сам забирает официальную MSX-сборку:
-https://github.com/yumata/lampa
-
-Она зафиксирована на commit:
-0f50f0c4cb3f602ecaff84925dca07f96bbd38a8
-
-В архив сама Lampa не упакована — Render получает её при Docker build.
-
-КАК УСТАНОВИТЬ НА MEDIA STATION X
----------------------------------
-1. Загрузить ВСЕ файлы этого архива в корень GitHub с заменой.
-2. Commit.
-3. Дождаться Render -> Live.
-
-4. В Media Station X:
-   Settings
-   -> Start Parameter
-   -> Setup
-
-5. Включить HTTPS / Security Lock.
-
-6. Ввести НЕ lampa.mx, а:
-
+Если Media Station X уже настроен на:
 hdrezka-premium-lampa.onrender.com
 
-Media Station X автоматически запросит:
-https://hdrezka-premium-lampa.onrender.com/msx/start.json
+ничего в MSX больше менять не надо.
 
-И откроет Lampa уже с нашего Render.
+Проверка:
+https://hdrezka-premium-lampa.onrender.com/health
 
-ВАЖНО:
-старую ссылку plugin.js на TV добавлять НЕ НУЖНО.
-В этой Lampa HDREZKA v5 загружается автоматически.
-
-ПОДКЛЮЧЕНИЕ HDREZKA КАК FILMIX
-------------------------------
-На карточке фильма есть две кнопки:
-
-HDREZKA
-ВОЙТИ
-
-Нажать ВОЙТИ.
-
-На TV появятся:
-- адрес https://hdrezka-premium-lampa.onrender.com/connect
-- короткий код из 6 символов
-
-Открыть адрес на телефоне/ПК.
-Ввести:
-- код с TV
-- логин HDRezka
-- пароль HDRezka
-
-После успешного входа TV автоматически получает сессию.
-
-На TV пароль НЕ хранится.
-Кнопка превращается в:
-
-REZKA ✓
-
-ЧТО СОХРАНЕНО ИЗ PRO-ВЕРСИИ
----------------------------
-- Premium аккаунт HDRezka
-- озвучки
-- сезоны / серии
-- качества
-- субтитры
-- native Lampa Timeline
-- полный lazy playlist
-- NEXT / PREV
-- autoplay следующей серии
-- переход между сезонами
-- запоминание озвучки
-- запоминание сезона
-- прогресс и просмотренные серии
-- backend cache
-- DENYS EDITION
-
-PC
---
-Backend и plugin.js по-прежнему можно открыть отдельно на ПК.
-Но для VIDAA/MSX правильный режим v5 — запуск самой Lampa с этого Render,
-чтобы Lampa и API были same-origin.
-
-ЛИЦЕНЗИЯ LAMPA
---------------
-Lampa загружается при Docker build из официального GPL-2.0 репозитория
-yumata/lampa. Исходный проект и лицензия сохраняются внутри загруженной
-сборки Lampa.
+Версия должна быть 5.1.0.

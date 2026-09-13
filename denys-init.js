@@ -32,7 +32,7 @@
           'text/javascript';
 
         script.src =
-          '/plugin.js?v=50';
+          '/plugin.js?v=51';
 
         script.onerror =
           function () {

@@ -10,7 +10,7 @@ import html as html_lib
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
-from urllib.parse import urljoin, parse_qs
+from urllib.parse import urljoin, parse_qs, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Request
@@ -20,10 +20,10 @@ from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse, Red
 from pydantic import BaseModel
 
 from hdrezka import HDRezkaClient
-from hdrezka.stream.player import PlayerSeries
+from hdrezka.post.urls import urls_from_ajax_response
 
 
-APP_VERSION = "5.0.0"
+APP_VERSION = "5.1.0"
 AUTHOR = "DENYS"
 STARTED_AT = time.time()
 
@@ -379,8 +379,46 @@ def _year(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _absolute(client: HDRezkaClient, href: str) -> str:
-    return urljoin(client.host, href)
+def _absolute(
+    client: HDRezkaClient,
+    href: str,
+) -> str:
+    return urljoin(
+        client.host,
+        href,
+    )
+
+
+def _post_url(
+    client: HDRezkaClient,
+    href: str,
+) -> str:
+    """
+    Search responses can contain an absolute URL from another Rezka mirror.
+    We keep its path/query but force the authenticated content host.
+    """
+    joined = urljoin(
+        client.host,
+        href or "",
+    )
+
+    target = urlsplit(
+        joined
+    )
+
+    base = urlsplit(
+        client.host
+    )
+
+    return urlunsplit(
+        (
+            base.scheme,
+            base.netloc,
+            target.path or "/",
+            target.query,
+            target.fragment,
+        )
+    )
 
 
 def parse_live_search(
@@ -421,7 +459,7 @@ def parse_live_search(
         if not href:
             continue
 
-        url = _absolute(client, href)
+        url = _post_url(client, href)
 
         if url in seen:
             continue
@@ -477,7 +515,7 @@ def parse_full_search(
         if not href:
             continue
 
-        url = _absolute(client, href)
+        url = _post_url(client, href)
 
         if url in seen:
             continue
@@ -824,6 +862,441 @@ async def login_and_build_session(
     )
 
 
+
+def _safe_int(
+    value: Any,
+) -> int | None:
+    try:
+        if value is None:
+            return None
+
+        text = str(
+            value
+        ).strip()
+
+        if not text:
+            return None
+
+        return int(
+            text
+        )
+    except Exception:
+        return None
+
+
+def _page_title(
+    soup: BeautifulSoup,
+) -> str:
+    node = soup.select_one(
+        ".b-post__title"
+    )
+
+    if node:
+        title = _clean(
+            node.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        if title:
+            return title
+
+    meta = soup.find(
+        "meta",
+        property="og:title",
+    )
+
+    if meta:
+        title = _clean(
+            str(
+                meta.get(
+                    "content",
+                    ""
+                )
+            )
+        )
+
+        if title:
+            return title
+
+    title_tag = soup.find(
+        "title"
+    )
+
+    if title_tag:
+        return _clean(
+            title_tag.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+    return ""
+
+
+def parse_post_meta(
+    html: str,
+    url: str,
+) -> dict[str, Any]:
+    """
+    Defensive parser based on the same core markers current Online Mod
+    uses for HDRezka:
+      .initCDNSeriesEvents(post, translator, season, episode, ...)
+      .initCDNMoviesEvents(post, translator, ...)
+      #translators-list .b-translator__item[data-translator_id]
+    """
+    raw = (
+        html or ""
+    ).replace(
+        "\r",
+        " ",
+    ).replace(
+        "\n",
+        " ",
+    )
+
+    soup = BeautifulSoup(
+        html or "",
+        "html.parser",
+    )
+
+    series_match = re.search(
+        r"\.initCDNSeriesEvents\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,",
+        raw,
+    )
+
+    movie_match = re.search(
+        r"\.initCDNMoviesEvents\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,",
+        raw,
+    )
+
+    post_id = None
+    default_voice = None
+    is_series = False
+    default_season = None
+    default_episode = None
+
+    if series_match:
+        is_series = True
+        post_id = _safe_int(
+            series_match.group(1)
+        )
+        default_voice = _safe_int(
+            series_match.group(2)
+        )
+        default_season = _safe_int(
+            series_match.group(3)
+        )
+        default_episode = _safe_int(
+            series_match.group(4)
+        )
+
+    elif movie_match:
+        post_id = _safe_int(
+            movie_match.group(1)
+        )
+        default_voice = _safe_int(
+            movie_match.group(2)
+        )
+
+    post_id_node = soup.find(
+        id="post_id"
+    )
+
+    if (
+        post_id is None
+        and post_id_node
+    ):
+        post_id = _safe_int(
+            post_id_node.get(
+                "value"
+            )
+        )
+
+    og_type = ""
+    og_node = soup.find(
+        "meta",
+        property="og:type",
+    )
+
+    if og_node:
+        og_type = str(
+            og_node.get(
+                "content",
+                ""
+            )
+            or ""
+        ).casefold()
+
+    if (
+        not is_series
+        and (
+            "tv_series"
+            in og_type
+            or "tv.series"
+            in og_type
+            or soup.select_one(
+                ".b-simple_season__item"
+            )
+        )
+    ):
+        is_series = True
+
+    voices: list[dict[str, Any]] = []
+    seen_voice: set[int] = set()
+
+    for node in soup.select(
+        "#translators-list "
+        ".b-translator__item"
+        "[data-translator_id]"
+    ):
+        translator_id = _safe_int(
+            node.get(
+                "data-translator_id"
+            )
+        )
+
+        if (
+            translator_id is None
+            or translator_id
+            in seen_voice
+        ):
+            continue
+
+        name = _clean(
+            str(
+                node.get(
+                    "title",
+                    ""
+                )
+                or node.get_text(
+                    " ",
+                    strip=True,
+                )
+                or ""
+            )
+        )
+
+        lang = ""
+
+        img = node.find(
+            "img"
+        )
+
+        if img:
+            lang = _clean(
+                str(
+                    img.get(
+                        "title",
+                        ""
+                    )
+                    or img.get(
+                        "alt",
+                        ""
+                    )
+                    or ""
+                )
+            )
+
+        if (
+            lang
+            and lang.casefold()
+            not in name.casefold()
+        ):
+            name = (
+                (
+                    name
+                    or "Оригинал"
+                )
+                + " ("
+                + lang
+                + ")"
+            )
+
+        voices.append({
+            "id":
+                translator_id,
+
+            "name":
+                (
+                    name
+                    or "Оригинал"
+                ),
+        })
+
+        seen_voice.add(
+            translator_id
+        )
+
+    if (
+        default_voice is not None
+        and default_voice
+        not in seen_voice
+    ):
+        voices.insert(
+            0,
+            {
+                "id":
+                    default_voice,
+
+                "name":
+                    "Оригинал",
+            },
+        )
+
+        seen_voice.add(
+            default_voice
+        )
+
+    if (
+        default_voice is None
+        and voices
+    ):
+        default_voice = voices[0][
+            "id"
+        ]
+
+    return {
+        "url":
+            url,
+
+        "name":
+            (
+                _page_title(
+                    soup
+                )
+                or "HDRezka"
+            ),
+
+        "id":
+            post_id,
+
+        "is_series":
+            bool(
+                is_series
+            ),
+
+        "voices":
+            voices,
+
+        "default_voice_id":
+            default_voice,
+
+        "default_season":
+            default_season,
+
+        "default_episode":
+            default_episode,
+
+        "markers": {
+            "series_init":
+                bool(
+                    series_match
+                ),
+
+            "movie_init":
+                bool(
+                    movie_match
+                ),
+
+            "post_id":
+                bool(
+                    post_id_node
+                ),
+
+            "og_type":
+                og_type,
+        },
+    }
+
+
+async def fetch_post_meta(
+    client: HDRezkaClient,
+    url: str,
+) -> dict[str, Any]:
+    """
+    Validate the page before parsing. If Rezka returns a login/mirror/
+    anti-bot page, return a useful diagnostic instead of None['content'].
+    """
+    normalized_url = _post_url(
+        client,
+        url,
+    )
+
+    response = await client.get_response(
+        "GET",
+        normalized_url,
+    )
+
+    html = response.text or ""
+
+    meta = parse_post_meta(
+        html,
+        normalized_url,
+    )
+
+    markers = meta.get(
+        "markers",
+        {},
+    )
+
+    if (
+        response.status_code >= 400
+        or meta.get("id")
+        is None
+        or not (
+            markers.get(
+                "series_init"
+            )
+            or markers.get(
+                "movie_init"
+            )
+            or markers.get(
+                "post_id"
+            )
+        )
+    ):
+        soup = BeautifulSoup(
+            html,
+            "html.parser",
+        )
+
+        raise HTTPException(
+            502,
+            (
+                "HDRezka вернула не страницу фильма. "
+                "status="
+                + str(
+                    response.status_code
+                )
+                + ", requested="
+                + normalized_url
+                + ", final="
+                + str(
+                    response.url
+                )
+                + ", title="
+                + repr(
+                    _page_title(
+                        soup
+                    )
+                )
+                + ", length="
+                + str(
+                    len(html)
+                )
+                + ", markers="
+                + json.dumps(
+                    markers,
+                    ensure_ascii=False,
+                )
+            ),
+        )
+
+    return meta
+
+
 def parse_episodes_payload(
     data: dict[str, Any],
 ) -> tuple[list[dict], list[dict]]:
@@ -932,43 +1405,28 @@ async def build_details(
     client: HDRezkaClient,
     url: str,
 ) -> dict[str, Any]:
-    player = await client.player(url)
-    post = player.post
-
-    voices = [
-        {
-            "id": int(translator_id),
-            "name": (
-                str(name).strip()
-                or "Оригинал"
-            ),
-        }
-        for name, translator_id
-        in post.translators.name_id.items()
-        if translator_id is not None
-    ]
-
-    default_voice = post.translator_id
-
-    if (
-        default_voice is None
-        and voices
-    ):
-        default_voice = voices[0]["id"]
+    meta = await fetch_post_meta(
+        client,
+        url,
+    )
 
     seasons: list[dict] = []
     episodes: list[dict] = []
 
+    default_voice = meta.get(
+        "default_voice_id"
+    )
+
     if (
-        isinstance(
-            player,
-            PlayerSeries,
+        meta.get(
+            "is_series"
         )
-        and default_voice is not None
+        and default_voice
+        is not None
     ):
         payload = (
             await client.ajax.get_episodes(
-                post.id,
+                meta["id"],
                 default_voice,
             )
         )
@@ -980,19 +1438,33 @@ async def build_details(
         )
 
     return {
-        "url": str(post.url),
-        "name": str(post.name),
-        "id": int(post.id),
-        "is_series": isinstance(
-            player,
-            PlayerSeries,
-        ),
-        "voices": voices,
-        "default_voice_id": (
-            default_voice
-        ),
-        "seasons": seasons,
-        "episodes": episodes,
+        "url":
+            meta["url"],
+
+        "name":
+            meta["name"],
+
+        "id":
+            int(
+                meta["id"]
+            ),
+
+        "is_series":
+            bool(
+                meta["is_series"]
+            ),
+
+        "voices":
+            meta["voices"],
+
+        "default_voice_id":
+            default_voice,
+
+        "seasons":
+            seasons,
+
+        "episodes":
+            episodes,
     }
 
 
@@ -1075,6 +1547,8 @@ async def unhandled_exception(
                 f"{type(exc).__name__}: "
                 f"{exc}"
             ),
+            "path": request.url.path,
+            "version": APP_VERSION,
         },
     )
 
@@ -1999,37 +2473,49 @@ async def api_episodes(
 ):
     episode_cache_key = (
         "episodes|"
-        + _session_cache_id(data.session)
+        + _session_cache_id(
+            data.session
+        )
         + "|"
         + data.url
         + "|"
-        + str(data.translator_id)
+        + str(
+            data.translator_id
+        )
     )
 
-    cached = _api_cache_get(episode_cache_key)
+    cached = _api_cache_get(
+        episode_cache_key
+    )
+
     if cached is not None:
         return cached
 
     async with client_from_session(
         data.session
     ) as client:
-        player = await client.player(
-            data.url
+        meta = await fetch_post_meta(
+            client,
+            data.url,
         )
 
-        if not isinstance(
-            player,
-            PlayerSeries,
+        if not meta.get(
+            "is_series"
         ):
             return {
-                "ok": True,
-                "seasons": [],
-                "episodes": [],
+                "ok":
+                    True,
+
+                "seasons":
+                    [],
+
+                "episodes":
+                    [],
             }
 
         payload = (
             await client.ajax.get_episodes(
-                player.post.id,
+                meta["id"],
                 data.translator_id,
             )
         )
@@ -2041,18 +2527,18 @@ async def api_episodes(
         )
 
         result = {
-            "ok": True,
-            "seasons": seasons,
-            "episodes": episodes,
+            "ok":
+                True,
+
+            "seasons":
+                seasons,
+
+            "episodes":
+                episodes,
         }
 
         _api_cache_set(
-            "episodes|"
-            + _session_cache_id(data.session)
-            + "|"
-            + data.url
-            + "|"
-            + str(data.translator_id),
+            episode_cache_key,
             result,
             15 * 60,
         )
@@ -2066,39 +2552,58 @@ async def api_stream(
 ):
     stream_cache_key = (
         "stream|"
-        + _session_cache_id(data.session)
+        + _session_cache_id(
+            data.session
+        )
         + "|"
         + data.url
         + "|"
-        + str(data.translator_id)
+        + str(
+            data.translator_id
+        )
         + "|"
-        + str(data.season or 0)
+        + str(
+            data.season
+            or 0
+        )
         + "|"
-        + str(data.episode or 0)
+        + str(
+            data.episode
+            or 0
+        )
     )
 
-    cached = _api_cache_get(stream_cache_key)
+    cached = _api_cache_get(
+        stream_cache_key
+    )
+
     if cached is not None:
         return {
-            "ok": True,
+            "ok":
+                True,
+
             **cached,
-            "cache": "hit",
+
+            "cache":
+                "hit",
         }
 
     async with client_from_session(
         data.session
     ) as client:
-        player = await client.player(
-            data.url
+        meta = await fetch_post_meta(
+            client,
+            data.url,
         )
 
-        if isinstance(
-            player,
-            PlayerSeries,
+        if meta.get(
+            "is_series"
         ):
             if (
-                data.season is None
-                or data.episode is None
+                data.season
+                is None
+                or data.episode
+                is None
             ):
                 raise HTTPException(
                     400,
@@ -2108,20 +2613,29 @@ async def api_stream(
                     ),
                 )
 
-            streams = (
-                await player.get_stream(
+            response = (
+                await client.ajax.get_stream(
+                    meta["id"],
+                    data.translator_id,
                     data.season,
                     data.episode,
-                    data.translator_id,
                 )
             )
 
         else:
-            streams = (
-                await player.get_stream(
-                    data.translator_id
+            response = (
+                await client.ajax.get_movie(
+                    meta["id"],
+                    data.translator_id,
                 )
             )
+
+        streams = (
+            urls_from_ajax_response(
+                response,
+                client=client,
+            )
+        )
 
         result = streams_to_json(
             streams
@@ -2134,9 +2648,13 @@ async def api_stream(
         )
 
         return {
-            "ok": True,
+            "ok":
+                True,
+
             **result,
-            "cache": "miss",
+
+            "cache":
+                "miss",
         }
 
 
