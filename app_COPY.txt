@@ -13,14 +13,14 @@ from urllib.parse import urljoin, parse_qs
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 from pydantic import BaseModel
 
 from hdrezka import HDRezkaClient
 from hdrezka.stream.player import PlayerSeries
 
 
-APP_VERSION = "4.1.0"
+APP_VERSION = "4.2.0"
 AUTHOR = "DENYS"
 STARTED_AT = time.time()
 
@@ -1120,6 +1120,248 @@ def _tv_int(
         return None
 
 
+
+@app.get("/bridge.html")
+async def bridge_html():
+    """
+    Same-origin transport bridge for Hisense VIDAA / Media Station X.
+    Parent Lampa talks to this iframe with postMessage.
+    The iframe performs same-origin XHR to this FastAPI service.
+    """
+    html = r"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>HDREZKA DENYS Bridge</title>
+</head>
+<body>
+<script>
+(function(){
+  'use strict';
+
+  var CHANNEL =
+    'hdrezka_denys_vidaa_bridge_v42';
+
+  var ALLOWED = {
+    '/health': 1,
+    '/api/login': 1,
+    '/api/status': 1,
+    '/api/resolve': 1,
+    '/api/details': 1,
+    '/api/episodes': 1,
+    '/api/stream': 1
+  };
+
+  function reply(target, payload) {
+    try {
+      payload.channel =
+        CHANNEL;
+
+      target.postMessage(
+        payload,
+        '*'
+      );
+    }
+    catch (e) {}
+  }
+
+  function request(msg, source) {
+    var path =
+      String(
+        msg.path ||
+        ''
+      );
+
+    if (!ALLOWED[path]) {
+      reply(
+        source,
+        {
+          kind: 'response',
+          id: msg.id,
+          ok: false,
+          status: 403,
+          error: 'Bridge path denied'
+        }
+      );
+
+      return;
+    }
+
+    var xhr =
+      new XMLHttpRequest();
+
+    var method =
+      String(
+        msg.method ||
+        'POST'
+      ).toUpperCase();
+
+    xhr.open(
+      method,
+      path,
+      true
+    );
+
+    xhr.timeout =
+      65000;
+
+    if (method !== 'GET') {
+      xhr.setRequestHeader(
+        'Content-Type',
+        'application/json'
+      );
+    }
+
+    xhr.onreadystatechange =
+      function () {
+        if (
+          xhr.readyState !== 4
+        ) {
+          return;
+        }
+
+        var data =
+          null;
+
+        try {
+          data =
+            JSON.parse(
+              xhr.responseText ||
+              '{}'
+            );
+        }
+        catch (e) {}
+
+        if (
+          xhr.status >= 200 &&
+          xhr.status < 300
+        ) {
+          reply(
+            source,
+            {
+              kind: 'response',
+              id: msg.id,
+              ok: true,
+              status: xhr.status,
+              data: data
+            }
+          );
+        }
+        else {
+          reply(
+            source,
+            {
+              kind: 'response',
+              id: msg.id,
+              ok: false,
+              status: xhr.status,
+              error:
+                (
+                  data &&
+                  (
+                    data.detail ||
+                    data.error
+                  )
+                ) ||
+                (
+                  'HTTP ' +
+                  xhr.status
+                )
+            }
+          );
+        }
+      };
+
+    xhr.onerror =
+      function () {
+        reply(
+          source,
+          {
+            kind: 'response',
+            id: msg.id,
+            ok: false,
+            status: 0,
+            error: 'Bridge XHR network error'
+          }
+        );
+      };
+
+    xhr.ontimeout =
+      function () {
+        reply(
+          source,
+          {
+            kind: 'response',
+            id: msg.id,
+            ok: false,
+            status: 408,
+            error: 'Bridge XHR timeout'
+          }
+        );
+      };
+
+    if (method === 'GET') {
+      xhr.send();
+    }
+    else {
+      xhr.send(
+        JSON.stringify(
+          msg.data ||
+          {}
+        )
+      );
+    }
+  }
+
+  window.addEventListener(
+    'message',
+    function (e) {
+      var msg =
+        e &&
+        e.data;
+
+      if (
+        !msg ||
+        msg.channel !== CHANNEL ||
+        msg.kind !== 'request' ||
+        !msg.id
+      ) {
+        return;
+      }
+
+      request(
+        msg,
+        e.source
+      );
+    },
+    false
+  );
+
+  try {
+    parent.postMessage(
+      {
+        channel: CHANNEL,
+        kind: 'ready',
+        version: '4.2.0'
+      },
+      '*'
+    );
+  }
+  catch (e) {}
+})();
+</script>
+</body>
+</html>"""
+
+    return HTMLResponse(
+        html,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Content-Security-Policy": "frame-ancestors *",
+        },
+    )
+
+
 @app.get("/tv/ping")
 async def tv_ping(
     request: Request,
@@ -1127,7 +1369,7 @@ async def tv_ping(
     return {
         "ok": True,
         "version": APP_VERSION,
-        "edition": "DENYS EDITION • TV SAFE",
+        "edition": "DENYS EDITION • VIDAA BRIDGE",
         "transport": "lampa-reguest/form-urlencoded",
         "content_host": CONTENT_HOST,
         "user_agent": (

@@ -1,65 +1,91 @@
-HDREZKA Premium • DENYS EDITION v4.1 TV SAFE
-================================================
+HDREZKA Premium • DENYS EDITION v4.2 VIDAA BRIDGE
+====================================================
 
-ГЛАВНЫЙ ФИКС ЭТОЙ ВЕРСИИ — ТЕЛЕВИЗОР / MEDIA STATION X.
+Версия специально для Hisense VIDAA + Media Station X.
 
-ПОЧЕМУ НА ПК РАБОТАЛО, А НА TV НЕ НАХОДИЛО ФИЛЬМЫ
---------------------------------------------------
-Старый plugin.js отправлял ВСЕ запросы к нашему backend через browser fetch()
-с application/json.
+ГЛАВНЫЙ ФИКС
+------------
+На ПК HDRezka могла работать, а на телевизоре Media Station X писать
+"нет подключения к сети" или показывать пустой поиск.
 
-На обычном Chrome на ПК это нормально.
+Причина: plugin.js загружается обычным <script>, но API-запросы к другому
+домену идут через XHR/fetch и старый VIDAA WebView может блокировать именно
+cross-origin API-трафик.
 
-На телевизорах Media Station X / старом TV WebView / некоторых WebOS/Tizen
-поведение браузерного fetch/CORS/preflight может отличаться.
+v4.2 использует SAME-ORIGIN BRIDGE:
 
-В v4.1:
-- browser fetch полностью убран из API транспорта;
-- используется Lampa.Reguest().native() — сетевой слой самой Lampa;
-- на Android Lampa может использовать Android.httpReq;
-- на остальных платформах используется совместимый AJAX механизм Lampa;
-- запросы идут как обычный form-urlencoded POST без JSON preflight;
-- если Reguest недоступен, есть fallback на XMLHttpRequest;
-- добавлены специальные /tv/* endpoints на backend;
-- добавлен /tv/ping;
-- в настройках есть кнопка "Проверить соединение TV";
-- в статусе видно TV SAFE.
+Media Station X / Lampa
+        ↓ postMessage
+https://hdrezka-premium-lampa.onrender.com/bridge.html
+        ↓ same-origin XHR
+FastAPI / HDRezka
+
+Для bridge.html API находится на том же домене, поэтому CORS между Lampa
+и Render вообще не участвует.
+
+Если bridge не запустился, остаётся старый TV SAFE transport как fallback.
+
+НОВАЯ КНОПКА АККАУНТА
+---------------------
+На карточке фильма теперь две кнопки:
+
+HDREZKA
+ВОЙТИ
+
+После успешной авторизации:
+REZKA ✓
+
+Кнопка ВОЙТИ / REZKA ✓ открывает меню:
+- Войти в HDRezka
+- Проверить аккаунт
+- Переподключить аккаунт
+- Выйти
+- Проверить VIDAA Bridge
+- Настройки HDREZKA
+
+Логин и пароль можно вводить прямо с телевизора.
+Пароль вводится в скрытом поле.
+
+Также в Настройки -> HDREZKA есть отдельная кнопка:
+"Подключить / войти в HDRezka".
 
 УСТАНОВКА
 ---------
-Загрузить ВСЕ файлы архива в корень GitHub с заменой.
-Commit.
-Дождаться Render -> Live.
+1. Распаковать архив.
+2. Загрузить ВСЕ файлы в корень GitHub с заменой.
+3. Commit.
+4. Дождаться Render -> Live.
+5. В Lampa использовать:
 
-В Lampa удалить старую ссылку плагина и добавить:
+https://hdrezka-premium-lampa.onrender.com/plugin.js?v=42
 
-https://hdrezka-premium-lampa.onrender.com/plugin.js?v=41
+6. Полностью закрыть Media Station X и открыть снова.
 
-Полностью перезапустить Lampa / Media Station X.
+ПРОВЕРКА
+--------
+На TV открыть карточку любого фильма.
+Нажать ВОЙТИ -> Проверить VIDAA Bridge.
 
-ПРОВЕРКА НА TV
---------------
-Настройки -> HDREZKA Premium by DENYS TV SAFE
--> Проверить соединение TV
+Нормальный результат:
+✅ VIDAA Bridge OK • v4.2.0
 
-Должно показать:
-✅ TV SAFE OK • v4.1.0
+После этого:
+ВОЙТИ -> логин -> пароль.
 
-После этого открыть любой фильм -> HDREZKA Premium.
+При успехе:
+✅ HDRezka подключена
+и кнопка станет REZKA ✓.
 
-Если после TV SAFE OK конкретный фильм не находится,
-ошибка уже будет означать не сеть телевизора, а точный запрос поиска/backend.
-
-Остальное из v4 сохранено:
-- внутренний Lampa player;
-- native Timeline;
-- resume;
-- плейлист серий;
-- NEXT/PREV;
-- авто следующая серия;
-- prefetch;
-- качество;
+Сохранены функции v4:
+- Premium-потоки вашего аккаунта;
 - озвучки;
-- сезоны;
+- сезоны/серии;
+- качества;
+- встроенный Lampa player;
+- Timeline;
+- настоящий сериал-плейлист;
+- NEXT/PREV;
+- автоследующая серия;
+- prefetch;
 - история;
 - DENYS EDITION.

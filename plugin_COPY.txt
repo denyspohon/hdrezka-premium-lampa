@@ -5,7 +5,7 @@
   window.hdrezka_premium_lampa_ready = true;
 
   var API = '__API_BASE__';
-  var VERSION = '4.1.0';
+  var VERSION = '4.2.0';
   var AUTHOR = 'DENYS';
   var EDITION = 'DENYS EDITION';
   var COMPONENT = 'hdrezka_premium';
@@ -32,7 +32,7 @@
   };
 
   var NETWORK_EDITION =
-    'TV SAFE';
+    'VIDAA BRIDGE';
 
   function notice(text) {
     try {
@@ -295,7 +295,7 @@
 
   /*
     ============================================================
-    TV SAFE NETWORK v4.1
+    VIDAA BRIDGE NETWORK v4.1
     ============================================================
 
     Старые версии использовали browser fetch().
@@ -311,7 +311,188 @@
     Данные отправляются как обычный application/x-www-form-urlencoded,
     то есть без JSON CORS-preflight.
   */
-  function rawPost(
+
+  /*
+    ============================================================
+    VIDAA / MEDIA STATION X SAME-ORIGIN BRIDGE v4.2
+    ============================================================
+    На ПК запросы из Lampa -> Render работают напрямую.
+    На VIDAA внутри Media Station X cross-origin XHR/fetch может
+    возвращать "нет подключения к сети", хотя сам plugin.js с
+    того же Render загружается.
+
+    Поэтому API теперь вызывается через iframe на том же Render:
+      Lampa/MSX -> postMessage -> bridge.html -> same-origin XHR.
+  */
+  var DenysBridge = (function () {
+    var CHANNEL = 'hdrezka_denys_vidaa_bridge_v42';
+    var frame = null;
+    var ready = false;
+    var starting = null;
+    var seq = 0;
+    var pending = {};
+
+    function onMessage(e) {
+      var msg = e && e.data;
+
+      if (!msg || msg.channel !== CHANNEL) return;
+
+      if (msg.kind === 'ready') {
+        ready = true;
+        wakeStatus('● VIDAA BRIDGE • готов');
+        return;
+      }
+
+      if (msg.kind !== 'response' || !msg.id) return;
+
+      var task = pending[msg.id];
+      if (!task) return;
+
+      delete pending[msg.id];
+      clearTimeout(task.timer);
+
+      if (msg.ok) {
+        task.resolve(msg.data);
+      }
+      else {
+        var error = new Error(msg.error || 'Bridge error');
+        error.status = msg.status || 0;
+        task.reject(error);
+      }
+    }
+
+    try {
+      window.addEventListener('message', onMessage, false);
+    }
+    catch (e) {}
+
+    function ensure() {
+      if (ready && frame && frame.contentWindow) {
+        return Promise.resolve(true);
+      }
+
+      if (starting) return starting;
+
+      starting = new Promise(function (resolve, reject) {
+        try {
+          frame = document.getElementById('hdrezka-denys-bridge-frame');
+
+          if (!frame) {
+            frame = document.createElement('iframe');
+            frame.id = 'hdrezka-denys-bridge-frame';
+            frame.src = API + '/bridge.html?v=' + VERSION;
+
+            /*
+              Не display:none: часть старых TV WebView не грузит
+              полностью скрытые iframe.
+            */
+            frame.style.position = 'fixed';
+            frame.style.left = '-50px';
+            frame.style.top = '-50px';
+            frame.style.width = '1px';
+            frame.style.height = '1px';
+            frame.style.opacity = '0.001';
+            frame.style.border = '0';
+            frame.style.pointerEvents = 'none';
+            frame.setAttribute('aria-hidden', 'true');
+
+            (document.body || document.documentElement).appendChild(frame);
+          }
+
+          var started = Date.now();
+
+          var timer = setInterval(function () {
+            if (ready && frame && frame.contentWindow) {
+              clearInterval(timer);
+              starting = null;
+              resolve(true);
+              return;
+            }
+
+            if (Date.now() - started > 10000) {
+              clearInterval(timer);
+              starting = null;
+              reject(new Error('VIDAA bridge не загрузился'));
+            }
+          }, 150);
+        }
+        catch (error) {
+          starting = null;
+          reject(error);
+        }
+      });
+
+      return starting;
+    }
+
+    function call(path, data, method) {
+      method = method || 'POST';
+
+      return ensure().then(function () {
+        return new Promise(function (resolve, reject) {
+          seq++;
+
+          var id = 'r' + Date.now() + '_' + seq;
+
+          var timer = setTimeout(function () {
+            if (!pending[id]) return;
+
+            delete pending[id];
+            reject(new Error('VIDAA bridge timeout'));
+          }, 70000);
+
+          pending[id] = {
+            resolve: resolve,
+            reject: reject,
+            timer: timer
+          };
+
+          try {
+            frame.contentWindow.postMessage({
+              channel: CHANNEL,
+              kind: 'request',
+              id: id,
+              method: method,
+              path: path,
+              data: data || {}
+            }, '*');
+          }
+          catch (error) {
+            clearTimeout(timer);
+            delete pending[id];
+            reject(error);
+          }
+        });
+      });
+    }
+
+    function ping() {
+      return call('/health', {}, 'GET');
+    }
+
+    function reset() {
+      ready = false;
+      starting = null;
+
+      try {
+        if (frame && frame.parentNode) {
+          frame.parentNode.removeChild(frame);
+        }
+      }
+      catch (e) {}
+
+      frame = null;
+    }
+
+    return {
+      ensure: ensure,
+      call: call,
+      ping: ping,
+      reset: reset
+    };
+  })();
+
+  function directRawPost(
     path,
     data,
     attempt
@@ -338,7 +519,7 @@
           setTimeout(
             function () {
               wakeStatus(
-                '● TV SAFE • сервер просыпается…'
+                '● VIDAA BRIDGE • сервер просыпается…'
               );
 
               if (
@@ -400,7 +581,7 @@
           }
 
           wakeStatus(
-            '● TV SAFE • сервер online'
+            '● VIDAA BRIDGE • сервер online'
           );
 
           resolve(
@@ -443,12 +624,12 @@
               true;
 
             wakeStatus(
-              '● TV SAFE • повтор подключения…'
+              '● VIDAA BRIDGE • повтор подключения…'
             );
 
             setTimeout(
               function () {
-                rawPost(
+                directRawPost(
                   path,
                   data,
                   attempt + 1
@@ -472,7 +653,7 @@
             true;
 
           wakeStatus(
-            '● TV SAFE • ошибка сети'
+            '● VIDAA BRIDGE • ошибка сети'
           );
 
           var error =
@@ -627,130 +808,271 @@
     );
   }
 
+  function rawPost(path, data, attempt) {
+    attempt = attempt || 0;
+
+    wakeStatus('● VIDAA BRIDGE • запрос…');
+
+    return DenysBridge
+      .call(path, data || {}, 'POST')
+      .then(function (result) {
+        wakeStatus('● VIDAA BRIDGE • online');
+        return result;
+      })
+      .catch(function (bridgeError) {
+        if (attempt > 0) throw bridgeError;
+
+        wakeStatus('● VIDAA BRIDGE • fallback…');
+
+        return directRawPost(path, data, 0);
+      });
+  }
+
   function tvPing() {
-    return new Promise(
-      function (
-        resolve,
-        reject
-      ) {
-        var endpoint =
-          API +
-          '/tv/ping';
+    return DenysBridge
+      .ping()
+      .then(function (data) {
+        wakeStatus('● VIDAA BRIDGE • соединение OK');
+        return data;
+      })
+      .catch(function () {
+        return new Promise(function (resolve, reject) {
+          try {
+            if (window.Lampa && Lampa.Reguest) {
+              var network = new Lampa.Reguest();
 
-        try {
-          if (
-            window.Lampa &&
-            Lampa.Reguest
-          ) {
-            var network =
-              new Lampa.Reguest();
+              network.timeout(30000);
 
-            network.timeout(
-              30000
-            );
-
-            network.native(
-              endpoint,
-              function (data) {
-                resolve(
-                  data
-                );
-              },
-              function (
-                xhr,
-                exception
-              ) {
-                reject(
-                  new Error(
-                    networkErrorText(
-                      xhr,
-                      exception
-                    )
-                  )
-                );
-              },
-              false,
-              {
-                type:
-                  'GET',
-                dataType:
-                  'json',
-                timeout:
-                  30000
-              }
-            );
-
-            return;
-          }
-        }
-        catch (e) {}
-
-        try {
-          var xhr =
-            new XMLHttpRequest();
-
-          xhr.open(
-            'GET',
-            endpoint,
-            true
-          );
-
-          xhr.timeout =
-            30000;
-
-          xhr.onreadystatechange =
-            function () {
-              if (
-                xhr.readyState !== 4
-              ) {
-                return;
-              }
-
-              if (
-                xhr.status >= 200 &&
-                xhr.status < 300
-              ) {
-                try {
-                  resolve(
-                    JSON.parse(
-                      xhr.responseText
-                    )
-                  );
+              network.native(
+                API + '/tv/ping',
+                resolve,
+                function (xhr, exception) {
+                  reject(new Error(networkErrorText(xhr, exception)));
+                },
+                false,
+                {
+                  type: 'GET',
+                  dataType: 'json',
+                  timeout: 30000
                 }
-                catch (e) {
-                  reject(
-                    e
-                  );
-                }
-              }
-              else {
-                reject(
-                  new Error(
-                    'HTTP ' +
-                    xhr.status
-                  )
-                );
-              }
-            };
-
-          xhr.onerror =
-            function () {
-              reject(
-                new Error(
-                  'TV network error'
-                )
               );
-            };
 
-          xhr.send();
+              return;
+            }
+          }
+          catch (e) {}
+
+          reject(new Error('Нет соединения с bridge'));
+        });
+      });
+  }
+
+
+
+  function openHdrezkaSettings() {
+    try {
+      Lampa.Controller.toggle('settings');
+      Lampa.Settings.create('hdrezka_premium_settings');
+      return;
+    }
+    catch (e) {}
+
+    notice('Откройте Настройки → HDREZKA Premium');
+  }
+
+  function promptRezkaLogin() {
+    var oldLogin = value(STORAGE.login);
+
+    try {
+      Lampa.Input.edit({
+        title: 'HDRezka • E-mail / логин',
+        value: oldLogin,
+        free: true,
+        nosave: true,
+        keyboard: 'lampa'
+      }, function (enteredLogin) {
+        enteredLogin = String(enteredLogin || '').trim();
+
+        if (!enteredLogin) return;
+
+        Lampa.Input.edit({
+          title: 'HDRezka • Пароль',
+          value: '',
+          free: true,
+          nosave: true,
+          keyboard: 'lampa',
+          password: true
+        }, function (enteredPassword) {
+          enteredPassword = String(enteredPassword || '');
+
+          if (!enteredPassword) return;
+
+          setValue(STORAGE.login, enteredLogin);
+          setValue(STORAGE.password, enteredPassword);
+          setValue(STORAGE.session, '');
+
+          notice('HDREZKA: подключаем аккаунт…');
+
+          login()
+            .then(function () {
+              notice('✅ HDRezka подключена');
+              updateAccountButtons();
+            })
+            .catch(function (error) {
+              notice('❌ HDRezka: ' + error.message);
+            });
+        });
+      });
+    }
+    catch (e) {
+      openHdrezkaSettings();
+    }
+  }
+
+  function disconnectRezka() {
+    setValue(STORAGE.session, '');
+    notice('HDRezka: сессия отключена');
+    updateAccountButtons();
+  }
+
+  function testAccount() {
+    var session = value(STORAGE.session);
+
+    if (!session) {
+      notice('HDRezka: аккаунт ещё не подключён');
+      return;
+    }
+
+    notice('HDRezka: проверяем аккаунт…');
+
+    rawPost('/api/status', {
+      session: session
+    })
+      .then(function (result) {
+        if (result && result.authenticated) {
+          notice('✅ HDRezka: аккаунт активен');
         }
-        catch (e) {
-          reject(
-            e
-          );
+        else {
+          notice('⚠ HDRezka: нужна повторная авторизация');
         }
-      }
-    );
+
+        updateAccountButtons();
+      })
+      .catch(function (error) {
+        notice('❌ HDRezka: ' + error.message);
+      });
+  }
+
+  function openAccountMenu() {
+    var connected = Boolean(value(STORAGE.session));
+    var items = [];
+
+    items.push({
+      title: connected ? '✅ HDRezka подключена' : '🔐 Войти в HDRezka',
+      subtitle: connected
+        ? (value(STORAGE.login) || 'Аккаунт')
+        : 'Подключить Premium-аккаунт',
+      action: connected ? 'status' : 'login'
+    });
+
+    if (connected) {
+      items.push({
+        title: '🔄 Переподключить аккаунт',
+        subtitle: 'Ввести логин и пароль заново',
+        action: 'login'
+      });
+
+      items.push({
+        title: '🚪 Выйти из HDRezka',
+        subtitle: 'Удалить текущую сессию',
+        action: 'logout'
+      });
+    }
+
+    items.push({
+      title: '📡 Проверить VIDAA Bridge',
+      subtitle: 'Проверить связь TV ↔ Render',
+      action: 'network'
+    });
+
+    items.push({
+      title: '⚙ Настройки HDREZKA',
+      subtitle: 'Качество, таймкод, озвучка, NEXT/PREV',
+      action: 'settings'
+    });
+
+    try {
+      Lampa.Select.show({
+        title: 'HDREZKA Premium • by DENYS',
+        items: items,
+
+        onSelect: function (item) {
+          try {
+            Lampa.Select.hide();
+          }
+          catch (e) {}
+
+          if (item.action === 'login') {
+            promptRezkaLogin();
+          }
+          else if (item.action === 'logout') {
+            disconnectRezka();
+          }
+          else if (item.action === 'status') {
+            testAccount();
+          }
+          else if (item.action === 'network') {
+            notice('VIDAA Bridge: проверяем…');
+
+            tvPing()
+              .then(function (data) {
+                notice(
+                  '✅ VIDAA Bridge OK • v' +
+                  (data && data.version || VERSION)
+                );
+              })
+              .catch(function (error) {
+                notice('❌ VIDAA Bridge: ' + error.message);
+              });
+          }
+          else if (item.action === 'settings') {
+            openHdrezkaSettings();
+          }
+        },
+
+        onBack: function () {
+          try {
+            Lampa.Select.hide();
+          }
+          catch (e) {}
+        }
+      });
+    }
+    catch (e) {
+      if (connected) testAccount();
+      else promptRezkaLogin();
+    }
+  }
+
+  function updateAccountButtons() {
+    try {
+      var connected = Boolean(value(STORAGE.session));
+
+      $('.view--hdrezka-account span')
+        .text(connected ? 'REZKA ✓' : 'ВОЙТИ');
+
+      $('.view--hdrezka-account')
+        .attr(
+          'data-subtitle',
+          connected
+            ? (
+                'HDRezka подключена • ' +
+                (value(STORAGE.login) || 'аккаунт')
+              )
+            : 'Подключить аккаунт HDRezka'
+        );
+    }
+    catch (e) {}
   }
 
   function login() {
@@ -812,6 +1134,8 @@
       notice(
         '✅ HDREZKA Premium: аккаунт авторизован'
       );
+
+      updateAccountButtons();
 
       return data.session;
     });
@@ -1182,7 +1506,7 @@
           'hdrezka_premium_settings',
 
         name:
-          'HDREZKA Premium • by DENYS • TV SAFE',
+          'HDREZKA Premium • by DENYS • VIDAA BRIDGE',
 
         icon:
           '<svg width="24" height="24" viewBox="0 0 24 24">' +
@@ -1191,6 +1515,32 @@
           '</svg>'
       });
     } catch (e) {}
+
+    Lampa.SettingsApi.addParam({
+      component:
+        'hdrezka_premium_settings',
+
+      param: {
+        name:
+          'hdrezka_premium_connect_account',
+
+        type:
+          'button'
+      },
+
+      field: {
+        name:
+          '🔐 Подключить / войти в HDRezka',
+
+        description:
+          'Открывает вход в ваш Premium-аккаунт прямо в Lampa'
+      },
+
+      onChange:
+        function () {
+          openAccountMenu();
+        }
+    });
 
     Lampa.SettingsApi.addParam({
       component:
@@ -1549,7 +1899,7 @@
           'Проверить соединение TV',
 
         description:
-          'TV SAFE: проверяет Media Station X / WebOS / Tizen / Android без запуска фильма'
+          'VIDAA BRIDGE: проверяет Media Station X / WebOS / Tizen / Android без запуска фильма'
       },
 
       onChange:
@@ -1562,7 +1912,7 @@
             .then(
               function (data) {
                 notice(
-                  '✅ TV SAFE OK • v' +
+                  '✅ VIDAA BRIDGE OK • v' +
                   (
                     data &&
                     data.version ||
@@ -1571,19 +1921,19 @@
                 );
 
                 wakeStatus(
-                  '● TV SAFE • соединение OK'
+                  '● VIDAA BRIDGE • соединение OK'
                 );
               }
             )
             .catch(
               function (error) {
                 notice(
-                  '❌ TV SAFE: ' +
+                  '❌ VIDAA BRIDGE: ' +
                   error.message
                 );
 
                 wakeStatus(
-                  '● TV SAFE • соединение не прошло'
+                  '● VIDAA BRIDGE • соединение не прошло'
                 );
               }
             );
@@ -1613,7 +1963,7 @@
           'Автор',
 
         description:
-          'HDREZKA Premium for Lampa • by DENYS • TV SAFE'
+          'HDREZKA Premium for Lampa • by DENYS • VIDAA BRIDGE'
       }
     });
 
@@ -4250,7 +4600,7 @@
 
     Lampa.Activity.push({
       url: '',
-      title: 'HDREZKA Premium • by DENYS • TV SAFE',
+      title: 'HDREZKA Premium • by DENYS • VIDAA BRIDGE',
       component: COMPONENT,
       search:
         movie.title ||
@@ -4272,7 +4622,7 @@
   }
 
   function addMainButton() {
-    var button =
+    var playButton =
       '<div class="full-start__button selector view--hdrezka-premium" ' +
       'data-subtitle="HDREZKA Premium • by DENYS ' +
       VERSION +
@@ -4282,6 +4632,26 @@
           '<path d="M88 64L51 86V42L88 64Z" fill="currentColor"/>' +
         '</svg>' +
         '<span>HDREZKA</span>' +
+      '</div>';
+
+    var accountButton =
+      '<div class="full-start__button selector view--hdrezka-account" ' +
+      'data-subtitle="Подключить аккаунт HDRezka">' +
+        '<svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+          '<circle cx="64" cy="44" r="22" stroke="currentColor" stroke-width="10"/>' +
+          '<path d="M28 105c4-24 18-36 36-36s32 12 36 36" stroke="currentColor" stroke-width="10" stroke-linecap="round"/>' +
+          '<path d="M91 29h23v23" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>' +
+          '<path d="M114 29L89 54" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>' +
+        '</svg>' +
+        '<span>' +
+          (
+            value(
+              STORAGE.session
+            )
+              ? 'REZKA ✓'
+              : 'ВОЙТИ'
+          ) +
+        '</span>' +
       '</div>';
 
     Lampa.Listener.follow(
@@ -4304,6 +4674,7 @@
             '.view--hdrezka-premium'
           ).length
         ) {
+          updateAccountButtons();
           return;
         }
 
@@ -4313,25 +4684,78 @@
             ? e.data.movie
             : null;
 
-        var btn =
-          $(button);
+        var playBtn =
+          $(playButton);
 
-        btn.on(
+        var accountBtn =
+          $(accountButton);
+
+        playBtn.on(
           'hover:enter',
           function () {
+            if (
+              !value(
+                STORAGE.session
+              ) &&
+              (
+                !value(
+                  STORAGE.login
+                ) ||
+                !value(
+                  STORAGE.password
+                )
+              )
+            ) {
+              openAccountMenu();
+              return;
+            }
+
             loadRezka(
               movie
             );
           }
         );
 
+        accountBtn.on(
+          'hover:enter',
+          function () {
+            openAccountMenu();
+          }
+        );
+
+        function insertAfter(
+          target
+        ) {
+          if (
+            target &&
+            target.length
+          ) {
+            target.after(
+              playBtn
+            );
+
+            playBtn.after(
+              accountBtn
+            );
+
+            updateAccountButtons();
+
+            return true;
+          }
+
+          return false;
+        }
+
         var torrent =
           root.find(
             '.view--torrent'
           );
 
-        if (torrent.length) {
-          torrent.after(btn);
+        if (
+          insertAfter(
+            torrent
+          )
+        ) {
           return;
         }
 
@@ -4340,8 +4764,11 @@
             '.view--online_mod'
           );
 
-        if (onlineMod.length) {
-          onlineMod.after(btn);
+        if (
+          insertAfter(
+            onlineMod
+          )
+        ) {
           return;
         }
 
@@ -4359,8 +4786,14 @@
 
         if (buttons.length) {
           buttons.append(
-            btn
+            playBtn
           );
+
+          buttons.append(
+            accountBtn
+          );
+
+          updateAccountButtons();
         }
       }
     );
@@ -4376,7 +4809,7 @@
           VERSION,
 
         name:
-          'HDREZKA Premium • by DENYS • TV SAFE',
+          'HDREZKA Premium • by DENYS • VIDAA BRIDGE',
 
         description:
           'Premium HDRezka с вашим аккаунтом • DENYS EDITION',
@@ -4388,7 +4821,7 @@
           function () {
             return {
               name:
-                'HDREZKA Premium • by DENYS • TV SAFE',
+                'HDREZKA Premium • by DENYS • VIDAA BRIDGE',
 
               description:
                 'Ваш аккаунт HDRezka'
@@ -4475,6 +4908,18 @@
       addTemplates();
       addMainButton();
       registerManifest();
+      updateAccountButtons();
+
+      setTimeout(
+        function () {
+          DenysBridge
+            .ensure()
+            .catch(
+              function () {}
+            );
+        },
+        300
+      );
 
       console.log(
         'HDREZKA Premium • by DENYS ' +
