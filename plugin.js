@@ -1,11 +1,12 @@
 (function () {
   'use strict';
 
-  if (window.hdrezka_premium_lampa_ready) return;
+  if (window.hdrezka_denys_v5_ready) return;
+  window.hdrezka_denys_v5_ready = true;
   window.hdrezka_premium_lampa_ready = true;
 
   var API = '__API_BASE__';
-  var VERSION = '4.2.0';
+  var VERSION = '5.0.0';
   var AUTHOR = 'DENYS';
   var EDITION = 'DENYS EDITION';
   var COMPONENT = 'hdrezka_premium';
@@ -27,12 +28,8 @@
     playerMode: 'hdrezka_premium_player_mode',
     autoNext: 'hdrezka_premium_auto_next',
     prefetchNext: 'hdrezka_premium_prefetch_next',
-    focusContinue: 'hdrezka_premium_focus_continue',
-    tvNetMode: 'hdrezka_premium_tv_net_mode'
+    focusContinue: 'hdrezka_premium_focus_continue'
   };
-
-  var NETWORK_EDITION =
-    'VIDAA BRIDGE';
 
   function notice(text) {
     try {
@@ -181,48 +178,49 @@
     );
   }
 
-  function formEncode(data) {
-    var rows = [];
-
-    data =
-      data ||
-      {};
-
-    Object.keys(
-      data
-    ).forEach(
-      function (key) {
-        var val =
-          data[key];
-
-        if (
-          val === null ||
-          typeof val === 'undefined'
-        ) {
-          val = '';
-        }
-
-        rows.push(
-          encodeURIComponent(
-            key
-          ) +
-          '=' +
-          encodeURIComponent(
-            String(val)
-          )
+  function apiOrigin() {
+    try {
+      var a =
+        document.createElement(
+          'a'
         );
-      }
-    );
 
-    return rows.join('&');
+      a.href =
+        API;
+
+      return (
+        a.protocol +
+        '//' +
+        a.host
+      );
+    }
+    catch (e) {
+      return API;
+    }
   }
 
-  function tvPath(path) {
+  function sameOrigin() {
+    try {
+      return (
+        apiOrigin() ===
+        (
+          window.location.protocol +
+          '//' +
+          window.location.host
+        )
+      );
+    }
+    catch (e) {
+      return false;
+    }
+  }
+
+  function rpcPath(path) {
     if (
       path.indexOf('/api/') === 0
     ) {
       return (
-        '/tv/' +
+        '/rpc/' +
         path.substr(5)
       );
     }
@@ -230,269 +228,67 @@
     return path;
   }
 
-  function networkErrorText(
+  function decodeNetworkError(
+    network,
     xhr,
     exception
   ) {
-    var body =
-      null;
-
     try {
       if (
         xhr &&
-        xhr.responseJSON
+        xhr.responseJSON &&
+        (
+          xhr.responseJSON.detail ||
+          xhr.responseJSON.error
+        )
       ) {
-        body =
-          xhr.responseJSON;
+        return (
+          xhr.responseJSON.detail ||
+          xhr.responseJSON.error
+        );
       }
-      else if (
-        xhr &&
-        xhr.responseText
+
+      if (
+        network &&
+        network.errorDecode
       ) {
-        body =
-          JSON.parse(
-            xhr.responseText
-          );
+        return network.errorDecode(
+          xhr,
+          exception
+        );
       }
     }
     catch (e) {}
 
-    if (
-      body &&
-      (
-        body.detail ||
-        body.error
-      )
-    ) {
-      return (
-        body.detail ||
-        body.error
-      );
-    }
-
-    if (
-      xhr &&
-      xhr.decode_error
-    ) {
-      return xhr.decode_error;
-    }
-
-    if (
-      xhr &&
-      xhr.status
-    ) {
-      return (
-        'HTTP ' +
-        xhr.status
-      );
-    }
-
     return (
-      exception ||
-      'Ошибка сети TV'
+      (
+        xhr &&
+        xhr.status
+      )
+        ? (
+            'HTTP ' +
+            xhr.status
+          )
+        : (
+            exception ||
+            'Нет подключения к серверу'
+          )
     );
   }
 
   /*
     ============================================================
-    VIDAA BRIDGE NETWORK v4.1
+    DENYS v5 NETWORK
     ============================================================
 
-    Старые версии использовали browser fetch().
-    На ПК это работало, но Media Station X / старые TV WebView
-    могут вести себя иначе.
+    На TV/MSX v5 работает с Lampa и backend НА ОДНОМ origin.
+    Поэтому никаких CORS proxy / iframe / cross-origin запросов нет.
 
-    Теперь запросы идут через НАТИВНЫЙ сетевой слой самой Lampa:
-      Lampa.Reguest().native()
-
-    На Android Lampa сама переводит native() в Android.httpReq.
-    На WebOS/Tizen/MSX/web используется совместимый AJAX путь Lampa.
-
-    Данные отправляются как обычный application/x-www-form-urlencoded,
-    то есть без JSON CORS-preflight.
+    На same-origin используем тот же Lampa.Reguest, что Filmix/Online Mod.
+    JSON fetch оставлен только как fallback для ПК, если plugin.js
+    установлен в чужую Lampa.
   */
-
-  /*
-    ============================================================
-    VIDAA / MEDIA STATION X SAME-ORIGIN BRIDGE v4.2
-    ============================================================
-    На ПК запросы из Lampa -> Render работают напрямую.
-    На VIDAA внутри Media Station X cross-origin XHR/fetch может
-    возвращать "нет подключения к сети", хотя сам plugin.js с
-    того же Render загружается.
-
-    Поэтому API теперь вызывается через iframe на том же Render:
-      Lampa/MSX -> postMessage -> bridge.html -> same-origin XHR.
-  */
-  var DenysBridge = (function () {
-    var CHANNEL = 'hdrezka_denys_vidaa_bridge_v42';
-    var frame = null;
-    var ready = false;
-    var starting = null;
-    var seq = 0;
-    var pending = {};
-
-    function onMessage(e) {
-      var msg = e && e.data;
-
-      if (!msg || msg.channel !== CHANNEL) return;
-
-      if (msg.kind === 'ready') {
-        ready = true;
-        wakeStatus('● VIDAA BRIDGE • готов');
-        return;
-      }
-
-      if (msg.kind !== 'response' || !msg.id) return;
-
-      var task = pending[msg.id];
-      if (!task) return;
-
-      delete pending[msg.id];
-      clearTimeout(task.timer);
-
-      if (msg.ok) {
-        task.resolve(msg.data);
-      }
-      else {
-        var error = new Error(msg.error || 'Bridge error');
-        error.status = msg.status || 0;
-        task.reject(error);
-      }
-    }
-
-    try {
-      window.addEventListener('message', onMessage, false);
-    }
-    catch (e) {}
-
-    function ensure() {
-      if (ready && frame && frame.contentWindow) {
-        return Promise.resolve(true);
-      }
-
-      if (starting) return starting;
-
-      starting = new Promise(function (resolve, reject) {
-        try {
-          frame = document.getElementById('hdrezka-denys-bridge-frame');
-
-          if (!frame) {
-            frame = document.createElement('iframe');
-            frame.id = 'hdrezka-denys-bridge-frame';
-            frame.src = API + '/bridge.html?v=' + VERSION;
-
-            /*
-              Не display:none: часть старых TV WebView не грузит
-              полностью скрытые iframe.
-            */
-            frame.style.position = 'fixed';
-            frame.style.left = '-50px';
-            frame.style.top = '-50px';
-            frame.style.width = '1px';
-            frame.style.height = '1px';
-            frame.style.opacity = '0.001';
-            frame.style.border = '0';
-            frame.style.pointerEvents = 'none';
-            frame.setAttribute('aria-hidden', 'true');
-
-            (document.body || document.documentElement).appendChild(frame);
-          }
-
-          var started = Date.now();
-
-          var timer = setInterval(function () {
-            if (ready && frame && frame.contentWindow) {
-              clearInterval(timer);
-              starting = null;
-              resolve(true);
-              return;
-            }
-
-            if (Date.now() - started > 10000) {
-              clearInterval(timer);
-              starting = null;
-              reject(new Error('VIDAA bridge не загрузился'));
-            }
-          }, 150);
-        }
-        catch (error) {
-          starting = null;
-          reject(error);
-        }
-      });
-
-      return starting;
-    }
-
-    function call(path, data, method) {
-      method = method || 'POST';
-
-      return ensure().then(function () {
-        return new Promise(function (resolve, reject) {
-          seq++;
-
-          var id = 'r' + Date.now() + '_' + seq;
-
-          var timer = setTimeout(function () {
-            if (!pending[id]) return;
-
-            delete pending[id];
-            reject(new Error('VIDAA bridge timeout'));
-          }, 70000);
-
-          pending[id] = {
-            resolve: resolve,
-            reject: reject,
-            timer: timer
-          };
-
-          try {
-            frame.contentWindow.postMessage({
-              channel: CHANNEL,
-              kind: 'request',
-              id: id,
-              method: method,
-              path: path,
-              data: data || {}
-            }, '*');
-          }
-          catch (error) {
-            clearTimeout(timer);
-            delete pending[id];
-            reject(error);
-          }
-        });
-      });
-    }
-
-    function ping() {
-      return call('/health', {}, 'GET');
-    }
-
-    function reset() {
-      ready = false;
-      starting = null;
-
-      try {
-        if (frame && frame.parentNode) {
-          frame.parentNode.removeChild(frame);
-        }
-      }
-      catch (e) {}
-
-      frame = null;
-    }
-
-    return {
-      ensure: ensure,
-      call: call,
-      ping: ping,
-      reset: reset
-    };
-  })();
-
-  function directRawPost(
+  function rawPost(
     path,
     data,
     attempt
@@ -501,565 +297,277 @@
       attempt ||
       0;
 
-    return new Promise(
-      function (
-        resolve,
-        reject
-      ) {
-        var finished =
-          false;
-
-        var endpoint =
-          API +
-          tvPath(
-            path
+    var wakeTimer =
+      setTimeout(
+        function () {
+          wakeStatus(
+            '● Сервер просыпается…'
           );
 
-        var wakeTimer =
-          setTimeout(
-            function () {
-              wakeStatus(
-                '● VIDAA BRIDGE • сервер просыпается…'
+          if (
+            attempt === 0
+          ) {
+            notice(
+              'HDREZKA: сервер просыпается…'
+            );
+          }
+        },
+        2500
+      );
+
+    if (
+      sameOrigin() &&
+      window.Lampa &&
+      Lampa.Reguest
+    ) {
+      return new Promise(
+        function (
+          resolve,
+          reject
+        ) {
+          var network =
+            new Lampa.Reguest();
+
+          network.timeout(
+            65000
+          );
+
+          network.silent(
+            API +
+            rpcPath(
+              path
+            ),
+
+            function (
+              result
+            ) {
+              clearTimeout(
+                wakeTimer
               );
 
-              if (
-                attempt === 0
-              ) {
-                notice(
-                  'HDREZKA: подключаем TV к серверу…'
-                );
-              }
+              wakeStatus(
+                '● SAME ORIGIN • online'
+              );
+
+              resolve(
+                result
+              );
             },
-            2500
-          );
 
-        function finishOk(
-          result
-        ) {
-          if (finished) return;
+            function (
+              xhr,
+              exception
+            ) {
+              clearTimeout(
+                wakeTimer
+              );
 
-          finished =
-            true;
+              var status =
+                xhr &&
+                xhr.status
+                  ? Number(
+                      xhr.status
+                    )
+                  : 0;
 
-          clearTimeout(
-            wakeTimer
-          );
+              var retryable =
+                !status ||
+                status === 408 ||
+                status === 429 ||
+                status === 500 ||
+                status === 502 ||
+                status === 503 ||
+                status === 504;
 
-          if (
-            typeof result ===
-            'string'
-          ) {
-            try {
-              result =
-                JSON.parse(
-                  result
-                );
-            }
-            catch (e) {}
-          }
-
-          if (
-            result &&
-            (
-              result.detail ||
-              result.error
-            ) &&
-            result.ok === false
-          ) {
-            finishError(
-              {
-                responseJSON:
-                  result,
-                status:
-                  result.status ||
-                  500
-              },
-              'server'
-            );
-
-            return;
-          }
-
-          wakeStatus(
-            '● VIDAA BRIDGE • сервер online'
-          );
-
-          resolve(
-            result
-          );
-        }
-
-        function finishError(
-          xhr,
-          exception
-        ) {
-          if (finished) return;
-
-          clearTimeout(
-            wakeTimer
-          );
-
-          var status =
-            xhr &&
-            xhr.status
-              ? Number(
-                  xhr.status
-                )
-              : 0;
-
-          var retryable =
-            !status ||
-            status === 408 ||
-            status === 429 ||
-            status === 500 ||
-            status === 502 ||
-            status === 503 ||
-            status === 504;
-
-          if (
-            retryable &&
-            attempt < 2
-          ) {
-            finished =
-              true;
-
-            wakeStatus(
-              '● VIDAA BRIDGE • повтор подключения…'
-            );
-
-            setTimeout(
-              function () {
-                directRawPost(
-                  path,
-                  data,
-                  attempt + 1
-                )
-                  .then(
-                    resolve
-                  )
-                  .catch(
-                    reject
-                  );
-              },
-              attempt === 0
-                ? 1400
-                : 2800
-            );
-
-            return;
-          }
-
-          finished =
-            true;
-
-          wakeStatus(
-            '● VIDAA BRIDGE • ошибка сети'
-          );
-
-          var error =
-            new Error(
-              networkErrorText(
-                xhr,
-                exception
-              )
-            );
-
-          error.status =
-            status;
-
-          reject(
-            error
-          );
-        }
-
-        /*
-          №1 — официальный сетевой слой Lampa.
-        */
-        try {
-          if (
-            window.Lampa &&
-            Lampa.Reguest
-          ) {
-            var network =
-              new Lampa.Reguest();
-
-            network.timeout(
-              65000
-            );
-
-            network.native(
-              endpoint,
-              finishOk,
-              finishError,
-              data || {},
-              {
-                type:
-                  'POST',
-
-                dataType:
-                  'json',
-
-                timeout:
-                  65000
-              }
-            );
-
-            return;
-          }
-        }
-        catch (e) {
-          /*
-            Если конкретная старая сборка не имеет Reguest,
-            идём через самый совместимый XMLHttpRequest.
-          */
-        }
-
-        /*
-          №2 — fallback без fetch(), тоже без JSON preflight.
-        */
-        try {
-          var xhr =
-            new XMLHttpRequest();
-
-          xhr.open(
-            'POST',
-            endpoint,
-            true
-          );
-
-          xhr.timeout =
-            65000;
-
-          xhr.setRequestHeader(
-            'Content-Type',
-            'application/x-www-form-urlencoded; charset=UTF-8'
-          );
-
-          xhr.onreadystatechange =
-            function () {
               if (
-                xhr.readyState !== 4
+                retryable &&
+                attempt < 2
               ) {
+                setTimeout(
+                  function () {
+                    rawPost(
+                      path,
+                      data,
+                      attempt + 1
+                    )
+                      .then(
+                        resolve
+                      )
+                      .catch(
+                        reject
+                      );
+                  },
+                  attempt === 0
+                    ? 1200
+                    : 2500
+                );
+
                 return;
               }
 
-              if (
-                xhr.status >= 200 &&
-                xhr.status < 300
-              ) {
-                var result =
-                  xhr.responseText;
-
-                try {
-                  result =
-                    JSON.parse(
-                      result
-                    );
-                }
-                catch (e) {}
-
-                finishOk(
-                  result
-                );
-              }
-              else {
-                finishError(
-                  xhr,
-                  'xhr'
-                );
-              }
-            };
-
-          xhr.ontimeout =
-            function () {
-              finishError(
-                xhr,
-                'timeout'
+              reject(
+                new Error(
+                  decodeNetworkError(
+                    network,
+                    xhr,
+                    exception
+                  )
+                )
               );
-            };
+            },
 
-          xhr.onerror =
-            function () {
-              finishError(
-                xhr,
-                'network'
-              );
-            };
+            data ||
+            {},
 
-          xhr.send(
-            formEncode(
+            {
+              dataType:
+                'json',
+
+              timeout:
+                65000,
+
+              attempts:
+                0
+            }
+          );
+        }
+      );
+    }
+
+    /*
+      Desktop / external-Lampa compatibility.
+    */
+    if (
+      typeof fetch ===
+      'function'
+    ) {
+      return fetch(
+        API +
+        path,
+        {
+          method:
+            'POST',
+
+          headers: {
+            'Content-Type':
+              'application/json'
+          },
+
+          body:
+            JSON.stringify(
               data ||
               {}
             )
-          );
         }
-        catch (error) {
-          finishError(
-            {
-              status:
-                0,
-              message:
-                error.message
-            },
-            error.message
-          );
-        }
-      }
+      )
+        .then(
+          function (
+            response
+          ) {
+            clearTimeout(
+              wakeTimer
+            );
+
+            return response
+              .text()
+              .then(
+                function (
+                  text
+                ) {
+                  var json =
+                    null;
+
+                  try {
+                    json =
+                      JSON.parse(
+                        text
+                      );
+                  }
+                  catch (e) {}
+
+                  if (
+                    !response.ok
+                  ) {
+                    throw new Error(
+                      (
+                        json &&
+                        (
+                          json.detail ||
+                          json.error
+                        )
+                      ) ||
+                      (
+                        'HTTP ' +
+                        response.status
+                      )
+                    );
+                  }
+
+                  return json;
+                }
+              );
+          }
+        );
+    }
+
+    clearTimeout(
+      wakeTimer
+    );
+
+    return Promise.reject(
+      new Error(
+        'Нет совместимого сетевого транспорта'
+      )
     );
   }
 
-  function rawPost(path, data, attempt) {
-    attempt = attempt || 0;
-
-    wakeStatus('● VIDAA BRIDGE • запрос…');
-
-    return DenysBridge
-      .call(path, data || {}, 'POST')
-      .then(function (result) {
-        wakeStatus('● VIDAA BRIDGE • online');
-        return result;
-      })
-      .catch(function (bridgeError) {
-        if (attempt > 0) throw bridgeError;
-
-        wakeStatus('● VIDAA BRIDGE • fallback…');
-
-        return directRawPost(path, data, 0);
-      });
+  function accountConnected() {
+    return Boolean(
+      value(
+        STORAGE.session
+      )
+    );
   }
 
-  function tvPing() {
-    return DenysBridge
-      .ping()
-      .then(function (data) {
-        wakeStatus('● VIDAA BRIDGE • соединение OK');
-        return data;
-      })
-      .catch(function () {
-        return new Promise(function (resolve, reject) {
-          try {
-            if (window.Lampa && Lampa.Reguest) {
-              var network = new Lampa.Reguest();
-
-              network.timeout(30000);
-
-              network.native(
-                API + '/tv/ping',
-                resolve,
-                function (xhr, exception) {
-                  reject(new Error(networkErrorText(xhr, exception)));
-                },
-                false,
-                {
-                  type: 'GET',
-                  dataType: 'json',
-                  timeout: 30000
-                }
-              );
-
-              return;
-            }
-          }
-          catch (e) {}
-
-          reject(new Error('Нет соединения с bridge'));
-        });
-      });
+  function accountLabel() {
+    return (
+      value(
+        STORAGE.accountName
+      ) ||
+      value(
+        STORAGE.login
+      ) ||
+      'HDRezka'
+    );
   }
 
+  var pairTimer =
+    null;
 
+  function stopPairPolling() {
+    if (
+      pairTimer
+    ) {
+      clearInterval(
+        pairTimer
+      );
 
-  function openHdrezkaSettings() {
-    try {
-      Lampa.Controller.toggle('settings');
-      Lampa.Settings.create('hdrezka_premium_settings');
-      return;
-    }
-    catch (e) {}
-
-    notice('Откройте Настройки → HDREZKA Premium');
-  }
-
-  function promptRezkaLogin() {
-    var oldLogin = value(STORAGE.login);
-
-    try {
-      Lampa.Input.edit({
-        title: 'HDRezka • E-mail / логин',
-        value: oldLogin,
-        free: true,
-        nosave: true,
-        keyboard: 'lampa'
-      }, function (enteredLogin) {
-        enteredLogin = String(enteredLogin || '').trim();
-
-        if (!enteredLogin) return;
-
-        Lampa.Input.edit({
-          title: 'HDRezka • Пароль',
-          value: '',
-          free: true,
-          nosave: true,
-          keyboard: 'lampa',
-          password: true
-        }, function (enteredPassword) {
-          enteredPassword = String(enteredPassword || '');
-
-          if (!enteredPassword) return;
-
-          setValue(STORAGE.login, enteredLogin);
-          setValue(STORAGE.password, enteredPassword);
-          setValue(STORAGE.session, '');
-
-          notice('HDREZKA: подключаем аккаунт…');
-
-          login()
-            .then(function () {
-              notice('✅ HDRezka подключена');
-              updateAccountButtons();
-            })
-            .catch(function (error) {
-              notice('❌ HDRezka: ' + error.message);
-            });
-        });
-      });
-    }
-    catch (e) {
-      openHdrezkaSettings();
-    }
-  }
-
-  function disconnectRezka() {
-    setValue(STORAGE.session, '');
-    notice('HDRezka: сессия отключена');
-    updateAccountButtons();
-  }
-
-  function testAccount() {
-    var session = value(STORAGE.session);
-
-    if (!session) {
-      notice('HDRezka: аккаунт ещё не подключён');
-      return;
-    }
-
-    notice('HDRezka: проверяем аккаунт…');
-
-    rawPost('/api/status', {
-      session: session
-    })
-      .then(function (result) {
-        if (result && result.authenticated) {
-          notice('✅ HDRezka: аккаунт активен');
-        }
-        else {
-          notice('⚠ HDRezka: нужна повторная авторизация');
-        }
-
-        updateAccountButtons();
-      })
-      .catch(function (error) {
-        notice('❌ HDRezka: ' + error.message);
-      });
-  }
-
-  function openAccountMenu() {
-    var connected = Boolean(value(STORAGE.session));
-    var items = [];
-
-    items.push({
-      title: connected ? '✅ HDRezka подключена' : '🔐 Войти в HDRezka',
-      subtitle: connected
-        ? (value(STORAGE.login) || 'Аккаунт')
-        : 'Подключить Premium-аккаунт',
-      action: connected ? 'status' : 'login'
-    });
-
-    if (connected) {
-      items.push({
-        title: '🔄 Переподключить аккаунт',
-        subtitle: 'Ввести логин и пароль заново',
-        action: 'login'
-      });
-
-      items.push({
-        title: '🚪 Выйти из HDRezka',
-        subtitle: 'Удалить текущую сессию',
-        action: 'logout'
-      });
-    }
-
-    items.push({
-      title: '📡 Проверить VIDAA Bridge',
-      subtitle: 'Проверить связь TV ↔ Render',
-      action: 'network'
-    });
-
-    items.push({
-      title: '⚙ Настройки HDREZKA',
-      subtitle: 'Качество, таймкод, озвучка, NEXT/PREV',
-      action: 'settings'
-    });
-
-    try {
-      Lampa.Select.show({
-        title: 'HDREZKA Premium • by DENYS',
-        items: items,
-
-        onSelect: function (item) {
-          try {
-            Lampa.Select.hide();
-          }
-          catch (e) {}
-
-          if (item.action === 'login') {
-            promptRezkaLogin();
-          }
-          else if (item.action === 'logout') {
-            disconnectRezka();
-          }
-          else if (item.action === 'status') {
-            testAccount();
-          }
-          else if (item.action === 'network') {
-            notice('VIDAA Bridge: проверяем…');
-
-            tvPing()
-              .then(function (data) {
-                notice(
-                  '✅ VIDAA Bridge OK • v' +
-                  (data && data.version || VERSION)
-                );
-              })
-              .catch(function (error) {
-                notice('❌ VIDAA Bridge: ' + error.message);
-              });
-          }
-          else if (item.action === 'settings') {
-            openHdrezkaSettings();
-          }
-        },
-
-        onBack: function () {
-          try {
-            Lampa.Select.hide();
-          }
-          catch (e) {}
-        }
-      });
-    }
-    catch (e) {
-      if (connected) testAccount();
-      else promptRezkaLogin();
+      pairTimer =
+        null;
     }
   }
 
   function updateAccountButtons() {
     try {
-      var connected = Boolean(value(STORAGE.session));
+      var connected =
+        accountConnected();
 
       $('.view--hdrezka-account span')
-        .text(connected ? 'REZKA ✓' : 'ВОЙТИ');
+        .text(
+          connected
+            ? 'REZKA ✓'
+            : 'ВОЙТИ'
+        );
 
       $('.view--hdrezka-account')
         .attr(
@@ -1067,13 +575,438 @@
           connected
             ? (
                 'HDRezka подключена • ' +
-                (value(STORAGE.login) || 'аккаунт')
+                accountLabel()
               )
-            : 'Подключить аккаунт HDRezka'
+            : (
+                'Подключить Premium-аккаунт HDRezka'
+              )
         );
     }
     catch (e) {}
   }
+
+  function pairStatus(
+    code
+  ) {
+    return rawPost(
+      '/api/pair/status',
+      {
+        code:
+          code
+      }
+    );
+  }
+
+  function openPairing() {
+    stopPairPolling();
+
+    notice(
+      'HDREZKA: создаём код подключения…'
+    );
+
+    rawPost(
+      '/api/pair/start',
+      {}
+    )
+      .then(
+        function (
+          result
+        ) {
+          if (
+            !result ||
+            !result.code
+          ) {
+            throw new Error(
+              'Сервер не вернул код подключения'
+            );
+          }
+
+          setValue(
+            STORAGE.pairCode,
+            result.code
+          );
+
+          var enabled =
+            null;
+
+          try {
+            enabled =
+              Lampa.Controller.enabled();
+          }
+          catch (e) {}
+
+          var html =
+            $('<div class="hdrezka-pair">' +
+              '<div class="hdrezka-pair__title">Подключение HDRezka Premium</div>' +
+              '<div class="hdrezka-pair__hint">Открой на телефоне или ПК:</div>' +
+              '<div class="hdrezka-pair__url"></div>' +
+              '<div class="hdrezka-pair__hint">и введи код:</div>' +
+              '<div class="hdrezka-pair__code"></div>' +
+              '<div class="hdrezka-pair__state">Ожидаем вход…</div>' +
+              '<div class="hdrezka-pair__brand">HDREZKA Premium • DENYS EDITION</div>' +
+            '</div>');
+
+          html
+            .find(
+              '.hdrezka-pair__url'
+            )
+            .text(
+              result.short_url ||
+              result.connect_url ||
+              (
+                API +
+                '/connect'
+              )
+            );
+
+          html
+            .find(
+              '.hdrezka-pair__code'
+            )
+            .text(
+              result.code
+            );
+
+          function closePair() {
+            stopPairPolling();
+
+            try {
+              Lampa.Modal.close();
+            }
+            catch (e) {}
+
+            try {
+              if (
+                enabled &&
+                enabled.name
+              ) {
+                Lampa.Controller.toggle(
+                  enabled.name
+                );
+              }
+              else {
+                Lampa.Controller.toggle(
+                  'content'
+                );
+              }
+            }
+            catch (e) {}
+          }
+
+          try {
+            Lampa.Modal.open({
+              title:
+                'HDREZKA • Подключить аккаунт',
+
+              html:
+                html,
+
+              size:
+                'medium',
+
+              onBack:
+                closePair
+            });
+          }
+          catch (e) {
+            notice(
+              'Код: ' +
+              result.code +
+              ' • ' +
+              (
+                result.short_url ||
+                result.connect_url
+              )
+            );
+          }
+
+          function check() {
+            pairStatus(
+              result.code
+            )
+              .then(
+                function (
+                  status
+                ) {
+                  if (
+                    !status
+                  ) {
+                    return;
+                  }
+
+                  if (
+                    status.status ===
+                    'connected' &&
+                    status.session
+                  ) {
+                    stopPairPolling();
+
+                    setValue(
+                      STORAGE.session,
+                      status.session
+                    );
+
+                    setValue(
+                      STORAGE.accountName,
+                      status.login ||
+                      'HDRezka'
+                    );
+
+                    /*
+                      После pairing пароль на TV не нужен.
+                    */
+                    setValue(
+                      STORAGE.password,
+                      ''
+                    );
+
+                    html
+                      .find(
+                        '.hdrezka-pair__state'
+                      )
+                      .text(
+                        '✅ Аккаунт подключён'
+                      );
+
+                    wakeStatus(
+                      '● HDRezka подключена'
+                    );
+
+                    updateAccountButtons();
+
+                    notice(
+                      '✅ HDRezka Premium подключена'
+                    );
+
+                    setTimeout(
+                      closePair,
+                      1000
+                    );
+                  }
+                  else if (
+                    status.status ===
+                    'expired'
+                  ) {
+                    stopPairPolling();
+
+                    html
+                      .find(
+                        '.hdrezka-pair__state'
+                      )
+                      .text(
+                        'Код истёк. Открой подключение заново.'
+                      );
+                  }
+                }
+              )
+              .catch(
+                function (
+                  error
+                ) {
+                  html
+                    .find(
+                      '.hdrezka-pair__state'
+                    )
+                    .text(
+                      'Связь: ' +
+                      error.message
+                    );
+                }
+              );
+          }
+
+          check();
+
+          pairTimer =
+            setInterval(
+              check,
+              3000
+            );
+        }
+      )
+      .catch(
+        function (
+          error
+        ) {
+          notice(
+            'HDREZKA: ' +
+            error.message
+          );
+        }
+      );
+  }
+
+  function disconnectAccount() {
+    stopPairPolling();
+
+    setValue(
+      STORAGE.session,
+      ''
+    );
+
+    setValue(
+      STORAGE.accountName,
+      ''
+    );
+
+    setValue(
+      STORAGE.password,
+      ''
+    );
+
+    updateAccountButtons();
+
+    notice(
+      'HDRezka отключена'
+    );
+  }
+
+  function checkAccount() {
+    var session =
+      value(
+        STORAGE.session
+      );
+
+    if (!session) {
+      openPairing();
+      return;
+    }
+
+    notice(
+      'HDREZKA: проверяем аккаунт…'
+    );
+
+    rawPost(
+      '/api/status',
+      {
+        session:
+          session
+      }
+    )
+      .then(
+        function (
+          result
+        ) {
+          if (
+            result &&
+            result.authenticated
+          ) {
+            notice(
+              '✅ HDRezka: аккаунт активен'
+            );
+          }
+          else {
+            notice(
+              '⚠ HDRezka: нужна повторная авторизация'
+            );
+          }
+        }
+      )
+      .catch(
+        function (
+          error
+        ) {
+          notice(
+            'HDREZKA: ' +
+            error.message
+          );
+        }
+      );
+  }
+
+  function openAccountMenu() {
+    if (
+      !accountConnected()
+    ) {
+      openPairing();
+      return;
+    }
+
+    var items = [
+      {
+        title:
+          '✅ ' +
+          accountLabel(),
+
+        subtitle:
+          'Проверить подключение HDRezka',
+
+        action:
+          'status'
+      },
+      {
+        title:
+          '🔄 Подключить другой аккаунт',
+
+        subtitle:
+          'Получить новый код входа',
+
+        action:
+          'pair'
+      },
+      {
+        title:
+          '🚪 Отключить HDRezka',
+
+        subtitle:
+          'Удалить сессию с этого устройства',
+
+        action:
+          'logout'
+      }
+    ];
+
+    try {
+      Lampa.Select.show({
+        title:
+          'HDREZKA Premium • by DENYS',
+
+        items:
+          items,
+
+        onSelect:
+          function (
+            item
+          ) {
+            try {
+              Lampa.Select.hide();
+            }
+            catch (e) {}
+
+            if (
+              item.action ===
+              'status'
+            ) {
+              checkAccount();
+            }
+            else if (
+              item.action ===
+              'pair'
+            ) {
+              openPairing();
+            }
+            else if (
+              item.action ===
+              'logout'
+            ) {
+              disconnectAccount();
+            }
+          },
+
+        onBack:
+          function () {
+            try {
+              Lampa.Select.hide();
+            }
+            catch (e) {}
+          }
+      });
+    }
+    catch (e) {
+      checkAccount();
+    }
+  }
+
 
   function login() {
     var login =
@@ -1085,7 +1018,7 @@
     if (!login || !password) {
       return Promise.reject(
         new Error(
-          'Введите логин и пароль в Настройки → HDREZKA Premium'
+          'Аккаунт не подключён. Нажмите REZKA / ВОЙТИ и подключите его по коду.'
         )
       );
     }
@@ -1131,11 +1064,16 @@
           .replace(/\/$/, '')
       );
 
-      notice(
-        '✅ HDREZKA Premium: аккаунт авторизован'
+      setValue(
+        STORAGE.accountName,
+        login
       );
 
       updateAccountButtons();
+
+      notice(
+        '✅ HDREZKA Premium: аккаунт авторизован'
+      );
 
       return data.session;
     });
@@ -1506,7 +1444,7 @@
           'hdrezka_premium_settings',
 
         name:
-          'HDREZKA Premium • by DENYS • VIDAA BRIDGE',
+          'HDREZKA Premium • by DENYS',
 
         icon:
           '<svg width="24" height="24" viewBox="0 0 24 24">' +
@@ -1522,7 +1460,7 @@
 
       param: {
         name:
-          'hdrezka_premium_connect_account',
+          'hdrezka_pair_account',
 
         type:
           'button'
@@ -1530,10 +1468,10 @@
 
       field: {
         name:
-          '🔐 Подключить / войти в HDRezka',
+          '🔐 Подключить HDRezka',
 
         description:
-          'Открывает вход в ваш Premium-аккаунт прямо в Lampa'
+          'Filmix-style: код на TV → вход с телефона/ПК. Пароль на телевизоре не хранится.'
       },
 
       onChange:
@@ -1562,7 +1500,7 @@
           'Логин / E-mail HDRezka',
 
         description:
-          'DENYS EDITION • ваш аккаунт HDRezka'
+          'Резервный способ входа. Рекомендуется кнопка «Подключить HDRezka»'
       },
 
       onChange:
@@ -1594,7 +1532,7 @@
           'Пароль HDRezka',
 
         description:
-          'Авторизация произойдёт автоматически при открытии фильма'
+          'Резервный способ. При подключении по коду пароль на TV не хранится.'
       },
 
       onChange:
@@ -1889,63 +1827,6 @@
 
       param: {
         name:
-          'hdrezka_premium_tv_test',
-        type:
-          'button'
-      },
-
-      field: {
-        name:
-          'Проверить соединение TV',
-
-        description:
-          'VIDAA BRIDGE: проверяет Media Station X / WebOS / Tizen / Android без запуска фильма'
-      },
-
-      onChange:
-        function () {
-          notice(
-            'HDREZKA: проверяем TV-соединение…'
-          );
-
-          tvPing()
-            .then(
-              function (data) {
-                notice(
-                  '✅ VIDAA BRIDGE OK • v' +
-                  (
-                    data &&
-                    data.version ||
-                    VERSION
-                  )
-                );
-
-                wakeStatus(
-                  '● VIDAA BRIDGE • соединение OK'
-                );
-              }
-            )
-            .catch(
-              function (error) {
-                notice(
-                  '❌ VIDAA BRIDGE: ' +
-                  error.message
-                );
-
-                wakeStatus(
-                  '● VIDAA BRIDGE • соединение не прошло'
-                );
-              }
-            );
-        }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
           'hdrezka_premium_denys_edition',
         type:
           'select',
@@ -1963,7 +1844,7 @@
           'Автор',
 
         description:
-          'HDREZKA Premium for Lampa • by DENYS • VIDAA BRIDGE'
+          'HDREZKA Premium for Lampa • SAME-ORIGIN MSX • by DENYS'
       }
     });
 
@@ -2029,6 +1910,44 @@
           'content:" • DENYS";' +
           'opacity:.58;' +
           'font-size:.72em;' +
+        '}' +
+        '.view--hdrezka-account span{' +
+          'font-size:.82em;' +
+          'font-weight:700;' +
+        '}' +
+        '.hdrezka-pair{' +
+          'text-align:center;' +
+          'padding:1.2em .8em;' +
+        '}' +
+        '.hdrezka-pair__title{' +
+          'font-size:1.25em;' +
+          'font-weight:700;' +
+          'margin-bottom:1.1em;' +
+        '}' +
+        '.hdrezka-pair__hint{' +
+          'opacity:.7;' +
+          'margin:.55em 0;' +
+        '}' +
+        '.hdrezka-pair__url{' +
+          'font-size:1.05em;' +
+          'font-weight:600;' +
+          'word-break:break-all;' +
+          'margin:.4em 0 1em;' +
+        '}' +
+        '.hdrezka-pair__code{' +
+          'font-size:2.6em;' +
+          'font-weight:800;' +
+          'letter-spacing:.18em;' +
+          'margin:.2em 0 .65em;' +
+        '}' +
+        '.hdrezka-pair__state{' +
+          'font-size:1em;' +
+          'margin-top:.7em;' +
+        '}' +
+        '.hdrezka-pair__brand{' +
+          'opacity:.5;' +
+          'font-size:.75em;' +
+          'margin-top:1.4em;' +
         '}' +
         '</style>';
 
@@ -4600,7 +4519,7 @@
 
     Lampa.Activity.push({
       url: '',
-      title: 'HDREZKA Premium • by DENYS • VIDAA BRIDGE',
+      title: 'HDREZKA Premium • by DENYS',
       component: COMPONENT,
       search:
         movie.title ||
@@ -4622,37 +4541,53 @@
   }
 
   function addMainButton() {
-    var playButton =
-      '<div class="full-start__button selector view--hdrezka-premium" ' +
-      'data-subtitle="HDREZKA Premium • by DENYS ' +
-      VERSION +
-      '">' +
-        '<svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">' +
-          '<circle cx="64" cy="64" r="52" stroke="currentColor" stroke-width="12"/>' +
-          '<path d="M88 64L51 86V42L88 64Z" fill="currentColor"/>' +
-        '</svg>' +
-        '<span>HDREZKA</span>' +
-      '</div>';
+    function playButton() {
+      return $(
+        '<div class="full-start__button selector view--hdrezka-premium" ' +
+        'data-subtitle="HDREZKA Premium • by DENYS ' +
+        VERSION +
+        '">' +
+          '<svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+            '<circle cx="64" cy="64" r="52" stroke="currentColor" stroke-width="12"/>' +
+            '<path d="M88 64L51 86V42L88 64Z" fill="currentColor"/>' +
+          '</svg>' +
+          '<span>HDREZKA</span>' +
+        '</div>'
+      );
+    }
 
-    var accountButton =
-      '<div class="full-start__button selector view--hdrezka-account" ' +
-      'data-subtitle="Подключить аккаунт HDRezka">' +
-        '<svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">' +
-          '<circle cx="64" cy="44" r="22" stroke="currentColor" stroke-width="10"/>' +
-          '<path d="M28 105c4-24 18-36 36-36s32 12 36 36" stroke="currentColor" stroke-width="10" stroke-linecap="round"/>' +
-          '<path d="M91 29h23v23" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>' +
-          '<path d="M114 29L89 54" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>' +
-        '</svg>' +
-        '<span>' +
+    function accountButton() {
+      var connected =
+        accountConnected();
+
+      return $(
+        '<div class="full-start__button selector view--hdrezka-account" ' +
+        'data-subtitle="' +
+        (
+          connected
+            ? (
+                'HDRezka подключена • ' +
+                accountLabel()
+              )
+            : (
+                'Подключить Premium-аккаунт HDRezka'
+              )
+        ) +
+        '">' +
+          '<svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+            '<circle cx="64" cy="43" r="21" stroke="currentColor" stroke-width="10"/>' +
+            '<path d="M28 105c5-23 18-35 36-35s31 12 36 35" stroke="currentColor" stroke-width="10" stroke-linecap="round"/>' +
+          '</svg>' +
+          '<span>' +
           (
-            value(
-              STORAGE.session
-            )
+            connected
               ? 'REZKA ✓'
               : 'ВОЙТИ'
           ) +
-        '</span>' +
-      '</div>';
+          '</span>' +
+        '</div>'
+      );
+    }
 
     Lampa.Listener.follow(
       'full',
@@ -4669,14 +4604,15 @@
         var root =
           e.object.activity.render();
 
-        if (
-          root.find(
-            '.view--hdrezka-premium'
-          ).length
-        ) {
-          updateAccountButtons();
-          return;
-        }
+        /*
+          Если старая версия успела оставить кнопку —
+          заменяем её нашей v5.
+        */
+        root
+          .find(
+            '.view--hdrezka-premium, .view--hdrezka-account'
+          )
+          .remove();
 
         var movie =
           e.data &&
@@ -4684,19 +4620,17 @@
             ? e.data.movie
             : null;
 
-        var playBtn =
-          $(playButton);
+        var play =
+          playButton();
 
-        var accountBtn =
-          $(accountButton);
+        var account =
+          accountButton();
 
-        playBtn.on(
+        play.on(
           'hover:enter',
           function () {
             if (
-              !value(
-                STORAGE.session
-              ) &&
+              !accountConnected() &&
               (
                 !value(
                   STORAGE.login
@@ -4706,7 +4640,7 @@
                 )
               )
             ) {
-              openAccountMenu();
+              openPairing();
               return;
             }
 
@@ -4716,7 +4650,7 @@
           }
         );
 
-        accountBtn.on(
+        account.on(
           'hover:enter',
           function () {
             openAccountMenu();
@@ -4727,46 +4661,40 @@
           target
         ) {
           if (
-            target &&
-            target.length
+            !target ||
+            !target.length
           ) {
-            target.after(
-              playBtn
-            );
-
-            playBtn.after(
-              accountBtn
-            );
-
-            updateAccountButtons();
-
-            return true;
+            return false;
           }
 
-          return false;
-        }
-
-        var torrent =
-          root.find(
-            '.view--torrent'
+          target.after(
+            play
           );
+
+          play.after(
+            account
+          );
+
+          updateAccountButtons();
+
+          return true;
+        }
 
         if (
           insertAfter(
-            torrent
+            root.find(
+              '.view--torrent'
+            )
           )
         ) {
           return;
         }
 
-        var onlineMod =
-          root.find(
-            '.view--online_mod'
-          );
-
         if (
           insertAfter(
-            onlineMod
+            root.find(
+              '.view--online_mod'
+            )
           )
         ) {
           return;
@@ -4786,11 +4714,11 @@
 
         if (buttons.length) {
           buttons.append(
-            playBtn
+            play
           );
 
           buttons.append(
-            accountBtn
+            account
           );
 
           updateAccountButtons();
@@ -4809,10 +4737,10 @@
           VERSION,
 
         name:
-          'HDREZKA Premium • by DENYS • VIDAA BRIDGE',
+          'HDREZKA Premium • by DENYS',
 
         description:
-          'Premium HDRezka с вашим аккаунтом • DENYS EDITION',
+          'HDRezka Premium • SAME-ORIGIN MSX • pairing • playlist • timeline • by DENYS',
 
         component:
           COMPONENT,
@@ -4821,7 +4749,7 @@
           function () {
             return {
               name:
-                'HDREZKA Premium • by DENYS • VIDAA BRIDGE',
+                'HDREZKA Premium • by DENYS',
 
               description:
                 'Ваш аккаунт HDRezka'
@@ -4910,16 +4838,11 @@
       registerManifest();
       updateAccountButtons();
 
-      setTimeout(
-        function () {
-          DenysBridge
-            .ensure()
-            .catch(
-              function () {}
-            );
-        },
-        300
-      );
+      if (sameOrigin()) {
+        wakeStatus(
+          '● SAME ORIGIN • готов'
+        );
+      }
 
       console.log(
         'HDREZKA Premium • by DENYS ' +

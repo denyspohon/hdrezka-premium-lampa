@@ -5,6 +5,8 @@ import json
 import os
 import re
 import time
+import secrets
+import html as html_lib
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
@@ -13,14 +15,15 @@ from urllib.parse import urljoin, parse_qs
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 from hdrezka import HDRezkaClient
 from hdrezka.stream.player import PlayerSeries
 
 
-APP_VERSION = "4.2.0"
+APP_VERSION = "5.0.0"
 AUTHOR = "DENYS"
 STARTED_AT = time.time()
 
@@ -56,6 +59,41 @@ _SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # translator/stream data with each other.
 _API_CACHE: dict[str, tuple[float, Any]] = {}
 API_CACHE_MAX = 400
+
+
+PAIR_TTL = 10 * 60
+_PAIRINGS: dict[str, dict[str, Any]] = {}
+_PAIR_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+LAMPA_DIR = os.getenv("LAMPA_DIR", "/app/lampa")
+
+
+def _pair_cleanup() -> None:
+    now = time.time()
+
+    expired = [
+        code
+        for code, item
+        in _PAIRINGS.items()
+        if item.get("expires", 0) <= now
+    ]
+
+    for code in expired:
+        _PAIRINGS.pop(code, None)
+
+
+def _pair_code() -> str:
+    _pair_cleanup()
+
+    for _ in range(30):
+        code = "".join(
+            secrets.choice(_PAIR_ALPHABET)
+            for _ in range(6)
+        )
+
+        if code not in _PAIRINGS:
+            return code
+
+    raise RuntimeError("Не удалось создать код подключения")
 
 
 def _api_cache_get(key: str) -> Any | None:
@@ -178,6 +216,10 @@ class StreamRequest(BaseModel):
     translator_id: int
     season: int | None = None
     episode: int | None = None
+
+
+class PairStatusRequest(BaseModel):
+    code: str
 
 
 def _b64e(raw: bytes) -> str:
@@ -1038,55 +1080,15 @@ async def unhandled_exception(
 
 
 
-async def _tv_payload(
+async def _rpc_payload(
     request: Request,
 ) -> dict[str, str]:
-    """
-    Compatibility transport for old TV WebViews / Media Station X.
-
-    The Lampa plugin sends a simple form-urlencoded POST so the TV does
-    not need browser fetch() and does not need an application/json
-    CORS preflight.
-    """
     raw = (
         await request.body()
     ).decode(
         "utf-8",
         errors="replace",
     )
-
-    content_type = (
-        request.headers.get(
-            "content-type",
-            "",
-        )
-        or ""
-    ).lower()
-
-    if (
-        "application/json"
-        in content_type
-        or raw.lstrip().startswith("{")
-    ):
-        try:
-            data = json.loads(
-                raw or "{}"
-            )
-
-            if isinstance(
-                data,
-                dict,
-            ):
-                return {
-                    str(k):
-                        ""
-                        if v is None
-                        else str(v)
-                    for k, v
-                    in data.items()
-                }
-        except Exception:
-            pass
 
     parsed = parse_qs(
         raw,
@@ -1103,7 +1105,7 @@ async def _tv_payload(
     }
 
 
-def _tv_int(
+def _rpc_int(
     value: str | None,
 ) -> int | None:
     if (
@@ -1120,272 +1122,321 @@ def _tv_int(
         return None
 
 
-
-@app.get("/bridge.html")
-async def bridge_html():
-    """
-    Same-origin transport bridge for Hisense VIDAA / Media Station X.
-    Parent Lampa talks to this iframe with postMessage.
-    The iframe performs same-origin XHR to this FastAPI service.
-    """
-    html = r"""<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>HDREZKA DENYS Bridge</title>
-</head>
-<body>
-<script>
-(function(){
-  'use strict';
-
-  var CHANNEL =
-    'hdrezka_denys_vidaa_bridge_v42';
-
-  var ALLOWED = {
-    '/health': 1,
-    '/api/login': 1,
-    '/api/status': 1,
-    '/api/resolve': 1,
-    '/api/details': 1,
-    '/api/episodes': 1,
-    '/api/stream': 1
-  };
-
-  function reply(target, payload) {
-    try {
-      payload.channel =
-        CHANNEL;
-
-      target.postMessage(
-        payload,
-        '*'
-      );
-    }
-    catch (e) {}
-  }
-
-  function request(msg, source) {
-    var path =
-      String(
-        msg.path ||
-        ''
-      );
-
-    if (!ALLOWED[path]) {
-      reply(
-        source,
-        {
-          kind: 'response',
-          id: msg.id,
-          ok: false,
-          status: 403,
-          error: 'Bridge path denied'
-        }
-      );
-
-      return;
-    }
-
-    var xhr =
-      new XMLHttpRequest();
-
-    var method =
-      String(
-        msg.method ||
-        'POST'
-      ).toUpperCase();
-
-    xhr.open(
-      method,
-      path,
-      true
-    );
-
-    xhr.timeout =
-      65000;
-
-    if (method !== 'GET') {
-      xhr.setRequestHeader(
-        'Content-Type',
-        'application/json'
-      );
-    }
-
-    xhr.onreadystatechange =
-      function () {
-        if (
-          xhr.readyState !== 4
-        ) {
-          return;
-        }
-
-        var data =
-          null;
-
-        try {
-          data =
-            JSON.parse(
-              xhr.responseText ||
-              '{}'
-            );
-        }
-        catch (e) {}
-
-        if (
-          xhr.status >= 200 &&
-          xhr.status < 300
-        ) {
-          reply(
-            source,
-            {
-              kind: 'response',
-              id: msg.id,
-              ok: true,
-              status: xhr.status,
-              data: data
-            }
-          );
-        }
-        else {
-          reply(
-            source,
-            {
-              kind: 'response',
-              id: msg.id,
-              ok: false,
-              status: xhr.status,
-              error:
-                (
-                  data &&
-                  (
-                    data.detail ||
-                    data.error
-                  )
-                ) ||
-                (
-                  'HTTP ' +
-                  xhr.status
-                )
-            }
-          );
-        }
-      };
-
-    xhr.onerror =
-      function () {
-        reply(
-          source,
-          {
-            kind: 'response',
-            id: msg.id,
-            ok: false,
-            status: 0,
-            error: 'Bridge XHR network error'
-          }
-        );
-      };
-
-    xhr.ontimeout =
-      function () {
-        reply(
-          source,
-          {
-            kind: 'response',
-            id: msg.id,
-            ok: false,
-            status: 408,
-            error: 'Bridge XHR timeout'
-          }
-        );
-      };
-
-    if (method === 'GET') {
-      xhr.send();
-    }
-    else {
-      xhr.send(
-        JSON.stringify(
-          msg.data ||
-          {}
-        )
-      );
-    }
-  }
-
-  window.addEventListener(
-    'message',
-    function (e) {
-      var msg =
-        e &&
-        e.data;
-
-      if (
-        !msg ||
-        msg.channel !== CHANNEL ||
-        msg.kind !== 'request' ||
-        !msg.id
-      ) {
-        return;
-      }
-
-      request(
-        msg,
-        e.source
-      );
-    },
-    false
-  );
-
-  try {
-    parent.postMessage(
-      {
-        channel: CHANNEL,
-        kind: 'ready',
-        version: '4.2.0'
-      },
-      '*'
-    );
-  }
-  catch (e) {}
-})();
-</script>
-</body>
-</html>"""
-
-    return HTMLResponse(
-        html,
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Content-Security-Policy": "frame-ancestors *",
-        },
-    )
-
-
-@app.get("/tv/ping")
-async def tv_ping(
+@app.post("/api/pair/start")
+async def api_pair_start(
     request: Request,
 ):
+    _pair_cleanup()
+
+    code = _pair_code()
+    expires = time.time() + PAIR_TTL
+
+    _PAIRINGS[code] = {
+        "created": time.time(),
+        "expires": expires,
+        "status": "pending",
+        "session": "",
+        "login": "",
+    }
+
+    base = str(
+        request.base_url
+    ).rstrip("/")
+
     return {
         "ok": True,
-        "version": APP_VERSION,
-        "edition": "DENYS EDITION • VIDAA BRIDGE",
-        "transport": "lampa-reguest/form-urlencoded",
-        "content_host": CONTENT_HOST,
-        "user_agent": (
-            request.headers.get(
-                "user-agent",
-                "",
-            )[:180]
+        "code": code,
+        "expires_in": PAIR_TTL,
+        "short_url": base + "/connect",
+        "connect_url": (
+            base
+            + "/connect?code="
+            + code
         ),
     }
 
 
-@app.post("/tv/login")
-async def tv_login(
+@app.post("/api/pair/status")
+async def api_pair_status(
+    data: PairStatusRequest,
+):
+    _pair_cleanup()
+
+    code = (
+        data.code
+        or ""
+    ).strip().upper()
+
+    item = _PAIRINGS.get(
+        code
+    )
+
+    if not item:
+        return {
+            "ok": True,
+            "status": "expired",
+        }
+
+    if (
+        item.get("expires", 0)
+        <= time.time()
+    ):
+        _PAIRINGS.pop(
+            code,
+            None,
+        )
+
+        return {
+            "ok": True,
+            "status": "expired",
+        }
+
+    if (
+        item.get("status")
+        == "connected"
+        and item.get("session")
+    ):
+        return {
+            "ok": True,
+            "status": "connected",
+            "session": item["session"],
+            "login": item.get("login", ""),
+        }
+
+    return {
+        "ok": True,
+        "status": "pending",
+        "expires_in": max(
+            0,
+            int(
+                item["expires"]
+                - time.time()
+            ),
+        ),
+    }
+
+
+def _connect_page(
+    code: str = "",
+    message: str = "",
+    success: bool = False,
+) -> str:
+    code = html_lib.escape(
+        code or ""
+    )
+
+    message = html_lib.escape(
+        message or ""
+    )
+
+    status = ""
+
+    if message:
+        status = (
+            '<div class="status '
+            + (
+                "ok"
+                if success
+                else "bad"
+            )
+            + '">'
+            + message
+            + "</div>"
+        )
+
+    return f"""<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HDREZKA Premium • DENYS</title>
+<style>
+*{{box-sizing:border-box}}
+body{{margin:0;background:#101114;color:#fff;font-family:Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}}
+.card{{width:min(520px,100%);background:#1a1c21;border:1px solid #323640;border-radius:20px;padding:28px;box-shadow:0 20px 70px rgba(0,0,0,.35)}}
+.brand{{font-size:13px;opacity:.55;letter-spacing:.12em;text-transform:uppercase;margin-bottom:9px}}
+h1{{margin:0 0 8px;font-size:28px}}
+p{{opacity:.72;line-height:1.45;margin:0 0 22px}}
+label{{display:block;font-size:13px;opacity:.7;margin:14px 0 7px}}
+input{{width:100%;padding:14px 15px;border-radius:11px;border:1px solid #3a3f49;background:#101216;color:#fff;font-size:17px;outline:none}}
+input:focus{{border-color:#fff}}
+button{{width:100%;margin-top:20px;padding:15px;border:0;border-radius:11px;font-weight:700;font-size:16px;cursor:pointer}}
+.status{{margin:0 0 18px;padding:13px;border-radius:10px;line-height:1.4}}
+.status.ok{{background:#173522}}
+.status.bad{{background:#421d22}}
+.small{{font-size:12px;opacity:.45;margin-top:18px;text-align:center}}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="brand">HDREZKA PREMIUM • DENYS EDITION</div>
+<h1>Подключить телевизор</h1>
+<p>Введите код с экрана TV и данные вашего аккаунта HDRezka. Пароль используется только для входа и не отправляется обратно на телевизор.</p>
+{status}
+<form method="post" action="/connect">
+<label>Код с телевизора</label>
+<input name="code" value="{code}" maxlength="6" autocomplete="one-time-code" required>
+<label>Логин / E-mail HDRezka</label>
+<input name="login" type="text" autocomplete="username" required>
+<label>Пароль HDRezka</label>
+<input name="password" type="password" autocomplete="current-password" required>
+<button type="submit">Подключить HDRezka</button>
+</form>
+<div class="small">Сессия передаётся на TV после успешной авторизации • пароль не сохраняется в pairing</div>
+</div>
+</body>
+</html>"""
+
+
+@app.get("/connect")
+async def connect_get(
     request: Request,
 ):
-    data = await _tv_payload(
+    code = (
+        request.query_params.get(
+            "code",
+            "",
+        )
+        or ""
+    ).strip().upper()
+
+    return HTMLResponse(
+        _connect_page(
+            code=code,
+        ),
+        headers={
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/connect")
+async def connect_post(
+    request: Request,
+):
+    raw = (
+        await request.body()
+    ).decode(
+        "utf-8",
+        errors="replace",
+    )
+
+    form = parse_qs(
+        raw,
+        keep_blank_values=True,
+    )
+
+    def one(name: str) -> str:
+        values = form.get(
+            name,
+            [""],
+        )
+
+        return (
+            str(
+                values[-1]
+            )
+            if values
+            else ""
+        )
+
+    code = (
+        one("code")
+        .strip()
+        .upper()
+    )
+
+    login_value = (
+        one("login")
+        .strip()
+    )
+
+    password_value = one(
+        "password"
+    )
+
+    _pair_cleanup()
+
+    item = _PAIRINGS.get(
+        code
+    )
+
+    if not item:
+        return HTMLResponse(
+            _connect_page(
+                code=code,
+                message=(
+                    "Код не найден или уже истёк. "
+                    "Создайте новый код на телевизоре."
+                ),
+            ),
+            status_code=400,
+            headers={
+                "Cache-Control": "no-store",
+            },
+        )
+
+    try:
+        session, _ = (
+            await login_and_build_session(
+                login_value,
+                password_value,
+            )
+        )
+    except Exception as exc:
+        detail = (
+            getattr(
+                exc,
+                "detail",
+                None,
+            )
+            or str(exc)
+            or "Ошибка авторизации"
+        )
+
+        return HTMLResponse(
+            _connect_page(
+                code=code,
+                message=(
+                    "Не удалось войти в HDRezka: "
+                    + str(detail)
+                ),
+            ),
+            status_code=400,
+            headers={
+                "Cache-Control": "no-store",
+            },
+        )
+
+    item["status"] = "connected"
+    item["session"] = session
+    item["login"] = login_value
+
+    return HTMLResponse(
+        _connect_page(
+            code=code,
+            message=(
+                "Готово. HDRezka подключена. "
+                "Можно вернуться к телевизору."
+            ),
+            success=True,
+        ),
+        headers={
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+# ------------------------------------------------------------
+# SAME-ORIGIN RPC FOR MEDIA STATION X
+# Lampa.Reguest sends regular form-urlencoded POST.
+# ------------------------------------------------------------
+
+@app.post("/rpc/login")
+async def rpc_login(
+    request: Request,
+):
+    data = await _rpc_payload(
         request
     )
 
@@ -1403,11 +1454,11 @@ async def tv_login(
     )
 
 
-@app.post("/tv/status")
-async def tv_status(
+@app.post("/rpc/status")
+async def rpc_status(
     request: Request,
 ):
-    data = await _tv_payload(
+    data = await _rpc_payload(
         request
     )
 
@@ -1421,11 +1472,11 @@ async def tv_status(
     )
 
 
-@app.post("/tv/resolve")
-async def tv_resolve(
+@app.post("/rpc/resolve")
+async def rpc_resolve(
     request: Request,
 ):
-    data = await _tv_payload(
+    data = await _rpc_payload(
         request
     )
 
@@ -1443,7 +1494,7 @@ async def tv_resolve(
                 "original_title",
                 "",
             ),
-            year=_tv_int(
+            year=_rpc_int(
                 data.get(
                     "year"
                 )
@@ -1452,11 +1503,11 @@ async def tv_resolve(
     )
 
 
-@app.post("/tv/details")
-async def tv_details(
+@app.post("/rpc/details")
+async def rpc_details(
     request: Request,
 ):
-    data = await _tv_payload(
+    data = await _rpc_payload(
         request
     )
 
@@ -1474,19 +1525,17 @@ async def tv_details(
     )
 
 
-@app.post("/tv/episodes")
-async def tv_episodes(
+@app.post("/rpc/episodes")
+async def rpc_episodes(
     request: Request,
 ):
-    data = await _tv_payload(
+    data = await _rpc_payload(
         request
     )
 
-    translator_id = (
-        _tv_int(
-            data.get(
-                "translator_id"
-            )
+    translator_id = _rpc_int(
+        data.get(
+            "translator_id"
         )
     )
 
@@ -1511,19 +1560,17 @@ async def tv_episodes(
     )
 
 
-@app.post("/tv/stream")
-async def tv_stream(
+@app.post("/rpc/stream")
+async def rpc_stream(
     request: Request,
 ):
-    data = await _tv_payload(
+    data = await _rpc_payload(
         request
     )
 
-    translator_id = (
-        _tv_int(
-            data.get(
-                "translator_id"
-            )
+    translator_id = _rpc_int(
+        data.get(
+            "translator_id"
         )
     )
 
@@ -1544,12 +1591,12 @@ async def tv_stream(
                 "",
             ),
             translator_id=translator_id,
-            season=_tv_int(
+            season=_rpc_int(
                 data.get(
                     "season"
                 )
             ),
-            episode=_tv_int(
+            episode=_rpc_int(
                 data.get(
                     "episode"
                 )
@@ -1558,7 +1605,85 @@ async def tv_stream(
     )
 
 
-@app.get("/")
+@app.post("/rpc/pair/start")
+async def rpc_pair_start(
+    request: Request,
+):
+    return await api_pair_start(
+        request
+    )
+
+
+@app.post("/rpc/pair/status")
+async def rpc_pair_status(
+    request: Request,
+):
+    data = await _rpc_payload(
+        request
+    )
+
+    return await api_pair_status(
+        PairStatusRequest(
+            code=data.get(
+                "code",
+                "",
+            ),
+        )
+    )
+
+
+@app.get("/msx/start.json")
+async def msx_start(
+    request: Request,
+):
+    base = str(
+        request.base_url
+    ).rstrip("/")
+
+    return {
+        "name":
+            "Lampa • HDREZKA Premium • DENYS",
+
+        "version":
+            APP_VERSION,
+
+        "parameter":
+            "content:"
+            + base
+            + "/msx/start.json",
+
+        "action":
+            "link:"
+            + base
+            + "/",
+    }
+
+
+@app.get("/denys-init.js")
+async def denys_init_js():
+    path = os.path.join(
+        os.path.dirname(__file__),
+        "denys-init.js",
+    )
+
+    with open(
+        path,
+        "r",
+        encoding="utf-8",
+    ) as file:
+        source = file.read()
+
+    return PlainTextResponse(
+        source,
+        media_type="application/javascript",
+        headers={
+            "Cache-Control":
+                "no-store, no-cache, must-revalidate, max-age=0",
+        },
+    )
+
+
+@app.get("/about")
 async def root(
     request: Request,
 ):
@@ -2013,3 +2138,63 @@ async def api_stream(
             **result,
             "cache": "miss",
         }
+
+
+@app.get("/")
+async def lampa_home():
+    index_path = os.path.join(
+        LAMPA_DIR,
+        "index.html",
+    )
+
+    if not os.path.isfile(
+        index_path
+    ):
+        return HTMLResponse(
+            "<h1>Lampa bundle not found</h1>",
+            status_code=503,
+        )
+
+    with open(
+        index_path,
+        "r",
+        encoding="utf-8",
+    ) as file:
+        source = file.read()
+
+    injection = (
+        '<script src="/denys-init.js?v='
+        + APP_VERSION
+        + '"></script>'
+    )
+
+    if (
+        injection
+        not in source
+    ):
+        source = source.replace(
+            "</body>",
+            injection
+            + "</body>",
+        )
+
+    return HTMLResponse(
+        source,
+        headers={
+            "Cache-Control":
+                "no-store, no-cache, must-revalidate, max-age=0",
+        },
+    )
+
+
+# IMPORTANT: mount LAST so /api, /rpc, /connect, /plugin.js,
+# /health and /msx/start.json keep priority.
+app.mount(
+    "/",
+    StaticFiles(
+        directory=LAMPA_DIR,
+        html=True,
+        check_dir=False,
+    ),
+    name="lampa-static",
+)
