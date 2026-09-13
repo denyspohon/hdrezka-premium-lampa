@@ -1,57 +1,85 @@
 (function () {
   'use strict';
 
-  if (window.hdrezka_denys_v5_ready) return;
-  window.hdrezka_denys_v5_ready = true;
-  window.hdrezka_premium_lampa_ready = true;
+  if (window.hdrezka_denys_v6_ready) return;
+  window.hdrezka_denys_v6_ready = true;
 
-  var API = '__API_BASE__';
-  var VERSION = '5.1.0';
+  var VERSION = '6.0.0';
   var AUTHOR = 'DENYS';
-  var EDITION = 'DENYS EDITION';
-  var COMPONENT = 'hdrezka_premium';
+  var COMPONENT = 'hdrezka_denys';
+  var SETTINGS = 'hdrezka_denys_settings';
 
   var STORAGE = {
-    login: 'hdrezka_premium_login',
-    password: 'hdrezka_premium_password',
-    session: 'hdrezka_premium_session',
-    host: 'hdrezka_premium_host',
-    quality: 'hdrezka_premium_quality',
-    rememberVoice: 'hdrezka_premium_remember_voice',
-    continueMode: 'hdrezka_premium_continue',
-    preferences: 'hdrezka_premium_preferences',
-    progress: 'hdrezka_premium_progress',
-    playback: 'hdrezka_denys_playback_v3',
-    resumeMode: 'hdrezka_premium_resume_mode',
-    watchedAt: 'hdrezka_premium_watched_at',
-    showProgress: 'hdrezka_premium_show_progress',
-    playerMode: 'hdrezka_premium_player_mode',
-    autoNext: 'hdrezka_premium_auto_next',
-    prefetchNext: 'hdrezka_premium_prefetch_next',
-    focusContinue: 'hdrezka_premium_focus_continue'
+    login: 'hdrezka_denys_login',
+    password: 'hdrezka_denys_password',
+    cookie: 'hdrezka_denys_cookie',
+    sid: 'hdrezka_denys_sid',
+    status: 'hdrezka_denys_status',
+    authMode: 'hdrezka_denys_auth_mode',
+    activeHost: 'hdrezka_denys_active_host',
+    mirror: 'hdrezka_denys_mirror',
+    proxyMode: 'hdrezka_denys_proxy_mode',
+    customProxy: 'hdrezka_denys_custom_proxy',
+    syncOnlineMod: 'hdrezka_denys_sync_online_mod',
+    proxyAck: 'hdrezka_denys_proxy_ack',
+    quality: 'hdrezka_denys_quality',
+    format: 'hdrezka_denys_format',
+    streamMode: 'hdrezka_denys_stream_mode',
+    streamProxy: 'hdrezka_denys_stream_proxy',
+    playerMode: 'hdrezka_denys_player_mode',
+    resumeMode: 'hdrezka_denys_resume_mode',
+    autoNext: 'hdrezka_denys_auto_next',
+    rememberVoice: 'hdrezka_denys_remember_voice',
+    rememberSeason: 'hdrezka_denys_remember_season',
+    focusContinue: 'hdrezka_denys_focus_continue',
+    watchedAt: 'hdrezka_denys_watched_at',
+    choices: 'hdrezka_denys_choices',
+    lastRoute: 'hdrezka_denys_last_route',
+    debug: 'hdrezka_denys_debug'
   };
 
-  function notice(text) {
+  var currentNetwork = null;
+  var currentActivity = null;
+  var routeDebug = '';
+  var playerRestoreTimer = null;
+  var playerScopeActive = false;
+  var oldTimecode = null;
+  var oldPlaylistNext = null;
+
+  function log() {
     try {
-      Lampa.Noty.show(text);
+      if (setting(STORAGE.debug, '0') === '1' && window.console && console.log) {
+        console.log.apply(console, ['[HDREZKA DENYS]'].concat([].slice.call(arguments)));
+      }
     } catch (e) {}
   }
 
-  function value(key) {
-    return String(
-      Lampa.Storage.get(key, '') || ''
-    );
+  function notice(text) {
+    try {
+      Lampa.Noty.show(String(text || ''));
+    } catch (e) {}
   }
 
-  function setValue(key, val) {
-    Lampa.Storage.set(key, val);
+  function get(key, fallback) {
+    var value = Lampa.Storage.get(key, fallback);
+    return typeof value === 'undefined' || value === null ? fallback : value;
+  }
+
+  function set(key, value) {
+    try {
+      Lampa.Storage.set(key, value);
+    } catch (e) {}
+  }
+
+  function setting(key, fallback) {
+    var value = get(key, '');
+    return value === '' || typeof value === 'undefined' ? fallback : String(value);
   }
 
   function readJson(key) {
-    var raw = value(key);
-
+    var raw = get(key, '');
     if (!raw) return {};
-
+    if (typeof raw === 'object') return raw;
     try {
       var parsed = JSON.parse(raw);
       return parsed && typeof parsed === 'object' ? parsed : {};
@@ -60,1905 +88,2398 @@
     }
   }
 
-  function writeJson(key, data) {
+  function writeJson(key, value) {
     try {
-      setValue(
-        key,
-        JSON.stringify(data || {})
-      );
+      set(key, JSON.stringify(value || {}));
     } catch (e) {}
   }
 
-  function setting(key, fallback) {
-    var current = value(key);
-    return current === '' ? fallback : current;
+  function boolValue(key, fallback) {
+    var raw = setting(key, fallback ? '1' : '0');
+    return raw === '1' || raw === 'true';
   }
 
-  function wakeStatus(text) {
+  function trimSlash(url) {
+    url = String(url || '').trim();
+    while (url.length > 0 && url.charAt(url.length - 1) === '/') {
+      url = url.substring(0, url.length - 1);
+    }
+    return url;
+  }
+
+  function startsWith(str, search) {
+    str = String(str || '');
+    search = String(search || '');
+    return str.lastIndexOf(search, 0) === 0;
+  }
+
+  function endsWith(str, search) {
+    str = String(str || '');
+    search = String(search || '');
+    var start = str.length - search.length;
+    if (start < 0) return false;
+    return str.indexOf(search, start) === start;
+  }
+
+  function isMSX() {
+    return !!(window.TVXHost || window.TVXManager);
+  }
+
+  function isPlatform(name) {
     try {
-      $('.hdrezka-denys-brand__status').text(text);
-    } catch (e) {}
-  }
-
-  function qualityLabel() {
-    var q = setting(STORAGE.quality, 'max');
-    return q === 'max' ? 'MAX' : q + 'p';
-  }
-
-  function pickQuality(data) {
-    if (!data) return '';
-
-    var preferred = setting(STORAGE.quality, 'max');
-    var quality = data.quality || {};
-
-    if (
-      preferred === 'max' ||
-      !quality ||
-      typeof quality !== 'object'
-    ) {
-      return data.url || '';
-    }
-
-    var target = parseInt(preferred, 10);
-
-    if (!target) {
-      return data.url || '';
-    }
-
-    var rows = [];
-
-    Object.keys(quality).forEach(
-      function (key) {
-        var number = parseInt(key, 10);
-
-        if (
-          number &&
-          quality[key]
-        ) {
-          rows.push({
-            number: number,
-            url: quality[key]
-          });
-        }
-      }
-    );
-
-    if (!rows.length) {
-      return data.url || '';
-    }
-
-    rows.sort(function (a, b) {
-      return a.number - b.number;
-    });
-
-    var chosen = null;
-
-    rows.forEach(function (row) {
-      if (row.number <= target) {
-        chosen = row;
-      }
-    });
-
-    if (!chosen) {
-      chosen = rows[0];
-    }
-
-    return chosen.url || data.url || '';
-  }
-
-  function yearFromMovie(movie) {
-    var date =
-      movie.release_date ||
-      movie.first_air_date ||
-      movie.last_air_date ||
-      '';
-
-    var year = parseInt(
-      String(date).slice(0, 4)
-    );
-
-    return year || null;
-  }
-
-  function movieTitle(movie) {
-    return (
-      movie.title ||
-      movie.name ||
-      movie.original_title ||
-      movie.original_name ||
-      ''
-    );
-  }
-
-  function originalTitle(movie) {
-    return (
-      movie.original_title ||
-      movie.original_name ||
-      ''
-    );
-  }
-
-  function apiOrigin() {
-    try {
-      var a =
-        document.createElement(
-          'a'
-        );
-
-      a.href =
-        API;
-
-      return (
-        a.protocol +
-        '//' +
-        a.host
-      );
-    }
-    catch (e) {
-      return API;
-    }
-  }
-
-  function sameOrigin() {
-    try {
-      return (
-        apiOrigin() ===
-        (
-          window.location.protocol +
-          '//' +
-          window.location.host
-        )
-      );
-    }
-    catch (e) {
+      return !!(Lampa.Platform && Lampa.Platform.is && Lampa.Platform.is(name));
+    } catch (e) {
       return false;
     }
   }
 
-  function rpcPath(path) {
-    if (
-      path.indexOf('/api/') === 0
-    ) {
-      return (
-        '/rpc/' +
-        path.substr(5)
-      );
-    }
-
-    return path;
+  function isTV() {
+    return isMSX() || isPlatform('webos') || isPlatform('tizen') || isPlatform('orsay');
   }
 
-  function decodeNetworkError(
-    network,
-    xhr,
-    exception
-  ) {
+  function isAndroid() {
+    return isPlatform('android');
+  }
+
+  function baseUserAgent() {
+    return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
+  }
+
+  function randomId(len) {
+    var chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    var out = '';
+    for (var i = 0; i < len; i++) {
+      out += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return out;
+  }
+
+  function parseURL(link) {
+    var a = document.createElement('a');
+    a.href = link;
+    return {
+      protocol: a.protocol,
+      host: a.host,
+      origin: a.protocol + '//' + a.host,
+      pathname: a.pathname || '/',
+      search: a.search || '',
+      hash: a.hash || ''
+    };
+  }
+
+  function fixLink(link, referrer) {
+    if (!link) return link;
+    link = String(link);
+    if (!referrer || link.indexOf('://') !== -1) return link;
+    var url = parseURL(referrer);
+    if (startsWith(link, '//')) return url.protocol + link;
+    if (startsWith(link, '/')) return url.origin + link;
+    if (startsWith(link, '?')) return url.origin + url.pathname + link;
+    if (startsWith(link, '#')) return url.origin + url.pathname + url.search + link;
+    var base = url.origin + url.pathname;
+    base = base.substring(0, base.lastIndexOf('/') + 1);
+    return base + link;
+  }
+
+  function forceHost(link, host) {
+    if (!link) return host + '/';
+    link = fixLink(link, host + '/');
     try {
-      if (
-        xhr &&
-        xhr.responseJSON &&
-        (
-          xhr.responseJSON.detail ||
-          xhr.responseJSON.error
-        )
-      ) {
-        return (
-          xhr.responseJSON.detail ||
-          xhr.responseJSON.error
-        );
-      }
-
-      if (
-        network &&
-        network.errorDecode
-      ) {
-        return network.errorDecode(
-          xhr,
-          exception
-        );
-      }
+      var p = parseURL(link);
+      return trimSlash(host) + (p.pathname || '/') + (p.search || '') + (p.hash || '');
+    } catch (e) {
+      return link;
     }
-    catch (e) {}
-
-    return (
-      (
-        xhr &&
-        xhr.status
-      )
-        ? (
-            'HTTP ' +
-            xhr.status
-          )
-        : (
-            exception ||
-            'Нет подключения к серверу'
-          )
-    );
   }
 
-  /*
-    ============================================================
-    DENYS v5 NETWORK
-    ============================================================
+  function proxyLink(link, proxy, proxyEnc, enc) {
+    if (!link || !proxy) return link;
+    if (proxyEnc == null) proxyEnc = '';
+    if (enc == null) enc = 'enc';
 
-    На TV/MSX v5 работает с Lampa и backend НА ОДНОМ origin.
-    Поэтому никаких CORS proxy / iframe / cross-origin запросов нет.
+    if (enc === 'enc') {
+      var pos = link.indexOf('/');
+      if (pos !== -1 && link.charAt(pos + 1) === '/') pos++;
+      var part1 = pos !== -1 ? link.substring(0, pos + 1) : '';
+      var part2 = pos !== -1 ? link.substring(pos + 1) : link;
+      return proxy + 'enc/' + encodeURIComponent(btoa(proxyEnc + part1)) + '/' + part2;
+    }
 
-    На same-origin используем тот же Lampa.Reguest, что Filmix/Online Mod.
-    JSON fetch оставлен только как fallback для ПК, если plugin.js
-    установлен в чужую Lampa.
-  */
-  function rawPost(
-    path,
-    data,
-    attempt
-  ) {
-    attempt =
-      attempt ||
-      0;
+    if (enc === 'enc1') {
+      var p = link.lastIndexOf('/');
+      var part = p !== -1 ? link.substring(0, p + 1) : '';
+      var partB = p !== -1 ? link.substring(p + 1) : link;
+      return proxy + 'enc1/' + encodeURIComponent(btoa(proxyEnc + part)) + '/' + partB;
+    }
 
-    var wakeTimer =
-      setTimeout(
-        function () {
-          wakeStatus(
-            '● Сервер просыпается…'
-          );
+    if (enc === 'enc2' || enc === 'enc2t') {
+      var posEnd = link.lastIndexOf('?');
+      var posStart = link.lastIndexOf('://');
+      if (posEnd === -1 || posEnd <= posStart) posEnd = link.length;
+      if (posStart === -1) posStart = -3;
+      var name = link.substring(posStart + 3, posEnd);
+      posStart = name.lastIndexOf('/');
+      name = posStart !== -1 ? name.substring(posStart + 1) : '';
+      name = name.replace(/\.(php|asp|aspx|jsp|jspx|cgi|pl|py|rb|env|ini|conf|config|htaccess|htpasswd|git|yml|yaml|sql)$/, '.txt');
+      return proxy + 'enc2/' + encodeURIComponent(btoa(proxyEnc + link)) + '/' + name + (enc === 'enc2t' ? '?jacred.test' : '');
+    }
 
-          if (
-            attempt === 0
-          ) {
-            notice(
-              'HDREZKA: сервер просыпается…'
-            );
+    return proxy + proxyEnc + link;
+  }
+
+  function primaryProxy() {
+    var custom = trimSlash(setting(STORAGE.customProxy, ''));
+    if (custom) return custom + '/';
+    return new Date().getHours() % 2
+      ? 'https://cors.nb557.workers.dev/'
+      : 'https://cors.fx666.workers.dev/';
+  }
+
+  function proxyList() {
+    var list = [
+      primaryProxy(),
+      'https://cors.nb557.workers.dev/',
+      'https://cors.fx666.workers.dev/',
+      'https://cors.nb557.deno.net/'
+    ];
+    var unique = [];
+    list.forEach(function (item) {
+      item = String(item || '');
+      if (item && unique.indexOf(item) === -1) unique.push(item);
+    });
+    return unique;
+  }
+
+  function onlineModMirror() {
+    var mirror = String(get('online_mod_rezka2_mirror', '') || '');
+    return trimSlash(mirror);
+  }
+
+  function directMirror() {
+    var own = trimSlash(setting(STORAGE.mirror, ''));
+    if (own) return own;
+    var online = onlineModMirror();
+    if (online) {
+      if (online.indexOf('://') === -1) online = 'https://' + online;
+      return trimSlash(online);
+    }
+    return 'https://kvk.zone';
+  }
+
+  function proxyHost() {
+    var active = trimSlash(setting(STORAGE.activeHost, ''));
+    var authMode = setting(STORAGE.authMode, '');
+    if (active && authMode === 'proxy') return active;
+
+    var own = trimSlash(setting(STORAGE.mirror, ''));
+    if (own && boolValue('hdrezka_denys_proxy_mirror', false)) {
+      if (own.indexOf('://') === -1) own = 'https://' + own;
+      return own;
+    }
+
+    return 'https://rezka.ag';
+  }
+
+  function routeMode() {
+    return setting(STORAGE.proxyMode, 'auto');
+  }
+
+  function shouldProxy() {
+    var mode = routeMode();
+    if (mode === 'always') return true;
+    if (mode === 'never') return false;
+    return isTV() || isMSX();
+  }
+
+  function activeCookie() {
+    var cookie = String(get(STORAGE.cookie, '') || '');
+    if (!cookie) return '';
+
+    var sid = String(get(STORAGE.sid, '') || '');
+    if (!sid) {
+      sid = randomId(26);
+      set(STORAGE.sid, sid);
+    }
+
+    if (cookie.indexOf('PHPSESSID=') === -1) {
+      cookie = 'PHPSESSID=' + sid + (cookie ? '; ' + cookie : '');
+    }
+
+    return cookie;
+  }
+
+  function syncToOnlineMod(cookie) {
+    if (!boolValue(STORAGE.syncOnlineMod, true)) return;
+    try {
+      if (cookie) {
+        set('online_mod_rezka2_cookie', cookie.replace(/(^|;\s*)PHPSESSID=[^;]*/g, '').replace(/^;\s*|\s*;$/g, ''));
+        set('online_mod_rezka2_status', 'true');
+      }
+      var login = String(get(STORAGE.login, '') || '');
+      if (login) set('online_mod_rezka2_name', login);
+    } catch (e) {}
+  }
+
+  function importOnlineModSession(silent) {
+    var cookie = String(get('online_mod_rezka2_cookie', '') || '');
+    if (!cookie) {
+      if (!silent) notice('Online Mod: сохранённая HDRezka-сессия не найдена');
+      return false;
+    }
+
+    set(STORAGE.cookie, cookie);
+    set(STORAGE.status, 'true');
+    set(STORAGE.authMode, 'proxy');
+    set(STORAGE.activeHost, 'https://rezka.ag');
+
+    var login = String(get('online_mod_rezka2_name', '') || '');
+    if (login && !get(STORAGE.login, '')) set(STORAGE.login, login);
+
+    if (!silent) notice('✅ HDRezka-сессия импортирована из Online Mod');
+    updateAccountButtons();
+    return true;
+  }
+
+  function normalizeSetCookie(headers) {
+    if (!headers) return [];
+    var value = headers['set-cookie'] || headers['Set-Cookie'] || null;
+    if (!value) return [];
+    if (typeof value === 'string') return [value];
+    return value && value.forEach ? value : [];
+  }
+
+  function cookieObject(cookie) {
+    var out = {};
+    String(cookie || '').split(';').forEach(function (part) {
+      part = part.trim();
+      if (!part) return;
+      var eq = part.indexOf('=');
+      if (eq === -1) return;
+      var name = part.substring(0, eq).trim();
+      var value = part.substring(eq + 1).trim();
+      if (name) out[name] = value;
+    });
+    return out;
+  }
+
+  function cookieString(values) {
+    var out = [];
+    for (var name in values) {
+      if (values.hasOwnProperty(name) && values[name] !== null && typeof values[name] !== 'undefined') {
+        out.push(name + '=' + values[name]);
+      }
+    }
+    return out.join('; ');
+  }
+
+  function mergeSetCookie(baseCookie, headers) {
+    var values = cookieObject(baseCookie);
+    normalizeSetCookie(headers).forEach(function (line) {
+      var first = String(line || '').split(';')[0];
+      var eq = first.indexOf('=');
+      if (eq === -1) return;
+      var name = first.substring(0, eq).trim();
+      var value = first.substring(eq + 1).trim();
+      if (!name) return;
+      if (value === 'deleted' || value === '') {
+        delete values[name];
+      } else {
+        values[name] = value;
+      }
+    });
+    return cookieString(values);
+  }
+
+  function buildProxyEnc(host, cookie, captureHeaders) {
+    var enc = '';
+    enc += 'param/Origin=' + encodeURIComponent(host) + '/';
+    enc += 'param/Referer=' + encodeURIComponent(host + '/') + '/';
+    enc += 'param/User-Agent=' + encodeURIComponent(baseUserAgent()) + '/';
+    if (captureHeaders) enc += 'cookie_plus/param/Cookie=/';
+    if (cookie) enc += 'param/Cookie=' + encodeURIComponent(cookie) + '/';
+    return enc;
+  }
+
+  function networkError(network, xhr, exception) {
+    try {
+      if (network && network.errorDecode) return network.errorDecode(xhr, exception);
+    } catch (e) {}
+    if (xhr && xhr.status) return 'HTTP ' + xhr.status;
+    return exception || 'Нет подключения';
+  }
+
+  function unwrapBody(result) {
+    if (result && typeof result === 'object' && typeof result.body !== 'undefined') {
+      return result.body;
+    }
+    return result;
+  }
+
+  function inspectHtml(str) {
+    str = String(str || '');
+    if (!str) return '';
+
+    if (
+      str.indexOf('Проверяем, что вы не бот!') !== -1 ||
+      str.indexOf('checking that you are not a bot') !== -1 ||
+      str.indexOf('cf-chl-') !== -1
+    ) {
+      return 'Антибот-проверка HDRezka';
+    }
+
+    if (/<form[^>]+id=["']check-form["'][^>]*>/i.test(str)) {
+      return 'HDRezka требует авторизацию';
+    }
+
+    if (/<span>MIRROR<\/span>.*?\$\.cookie\(/i.test(str)) {
+      return 'HDRezka требует cookie зеркала';
+    }
+
+    var error = str.match(/(<div class="error-code">[\s\S]*?<\/div>)\s*(<div class="error-title">[\s\S]*?<\/div>)/i);
+    if (error) {
+      try {
+        return $(error[0]).text().trim() || 'Ошибка HDRezka';
+      } catch (e) {
+        return 'Ошибка HDRezka';
+      }
+    }
+
+    if (startsWith(str, 'Fatal error:')) return str.substring(0, 300);
+    return '';
+  }
+
+  function routeCandidates(forceProxy) {
+    var activeHost = trimSlash(setting(STORAGE.activeHost, ''));
+    var authMode = setting(STORAGE.authMode, '');
+    var useProxy = typeof forceProxy === 'boolean' ? forceProxy : shouldProxy();
+    var routes = [];
+
+    if (authMode === 'browser' && activeHost && !useProxy) {
+      routes.push({ host: activeHost, proxy: '', kind: 'direct' });
+      return routes;
+    }
+
+    if (authMode === 'proxy' && activeHost && useProxy) {
+      proxyList().forEach(function (proxy) {
+        routes.push({ host: activeHost, proxy: proxy, kind: 'proxy' });
+      });
+      return routes;
+    }
+
+    if (useProxy) {
+      var phost = proxyHost();
+      proxyList().forEach(function (proxy) {
+        routes.push({ host: phost, proxy: proxy, kind: 'proxy' });
+      });
+
+      var mirror = directMirror();
+      if (mirror !== phost) {
+        proxyList().forEach(function (proxy) {
+          routes.push({ host: mirror, proxy: proxy, kind: 'proxy' });
+        });
+      }
+    } else {
+      routes.push({ host: directMirror(), proxy: '', kind: 'direct' });
+      if (routeMode() === 'auto') {
+        var ph = proxyHost();
+        proxyList().forEach(function (proxy) {
+          routes.push({ host: ph, proxy: proxy, kind: 'proxy' });
+        });
+      }
+    }
+
+    var unique = [];
+    var seen = {};
+    routes.forEach(function (route) {
+      var key = route.host + '|' + route.proxy;
+      if (!seen[key]) {
+        seen[key] = true;
+        unique.push(route);
+      }
+    });
+    return unique;
+  }
+
+  function requestOne(route, path, options) {
+    options = options || {};
+
+    return new Promise(function (resolve, reject) {
+      var network = new Lampa.Reguest();
+      currentNetwork = network;
+
+      var url = startsWith(path, 'http://') || startsWith(path, 'https://')
+        ? forceHost(path, route.host)
+        : trimSlash(route.host) + (startsWith(path, '/') ? path : '/' + path);
+
+      var cookie = options.cookie;
+      if (typeof cookie === 'undefined') cookie = activeCookie();
+
+      var data = typeof options.data === 'undefined' ? false : options.data;
+      var settings = {
+        timeout: options.timeout || 12000
+      };
+
+      network.timeout(options.timeout || 12000);
+
+      if (route.proxy) {
+        var enc = buildProxyEnc(route.host, cookie, !!options.captureHeaders);
+        url = proxyLink(url, route.proxy, enc, 'enc2t');
+        if (!options.captureHeaders && options.dataType) settings.dataType = options.dataType;
+      } else {
+        settings.withCredentials = true;
+        if (options.dataType) settings.dataType = options.dataType;
+
+        if (isAndroid()) {
+          settings.headers = {
+            'Origin': route.host,
+            'Referer': route.host + '/',
+            'User-Agent': baseUserAgent()
+          };
+          if (cookie) settings.headers.Cookie = cookie;
+        }
+
+        if (options.captureHeaders && isAndroid()) {
+          settings.returnHeaders = true;
+        }
+      }
+
+      log('request', route.kind, route.host, route.proxy, path);
+
+      network.native(
+        url,
+        function (result) {
+          routeDebug = route.kind + ' • ' + route.host + (route.proxy ? ' • ' + route.proxy : '');
+          set(STORAGE.lastRoute, routeDebug);
+          resolve({ result: result, route: route });
+        },
+        function (xhr, exception) {
+          reject({
+            message: networkError(network, xhr, exception),
+            status: xhr && xhr.status ? Number(xhr.status) : 0,
+            xhr: xhr,
+            exception: exception,
+            route: route
+          });
+        },
+        data,
+        settings
+      );
+    });
+  }
+
+  function requestRezka(path, options) {
+    options = options || {};
+    var routes = options.routes || routeCandidates(options.forceProxy);
+    var index = 0;
+    var lastError = null;
+
+    function next() {
+      if (index >= routes.length) {
+        var message = lastError && lastError.message ? lastError.message : 'Нет рабочего маршрута HDRezka';
+        return Promise.reject(new Error(message));
+      }
+
+      var route = routes[index++];
+      return requestOne(route, path, options)
+        .then(function (response) {
+          if (options.rejectChallenge) {
+            var body = unwrapBody(response.result);
+            if (typeof body === 'string') {
+              var reason = inspectHtml(body);
+              if (reason) {
+                lastError = { message: reason + ' • ' + route.host };
+                return next();
+              }
+            }
+          }
+          return response;
+        })
+        .catch(function (error) {
+          lastError = error || lastError;
+          return next();
+        });
+    }
+
+    return next();
+  }
+
+  function parseVerifyCookie(body) {
+    var match = String(body || '').match(/<span>MIRROR<\/span>[\s\S]*?<button[^>]+onclick="\$\.cookie\(([^)]*)\)/i);
+    if (!match) return null;
+
+    try {
+      var args = match[1];
+      var fn = new Function(
+        'return (function(){ var out=null; function c(name,value){out={name:name,value:value};} c(' + args + '); return out; })();'
+      );
+      return fn();
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function proxyLoginRoute(route, login, password) {
+    var loginPath = '/ajax/login/';
+    var postdata =
+      'login_name=' + encodeURIComponent(login) +
+      '&login_password=' + encodeURIComponent(password) +
+      '&login_not_save=0';
+
+    return requestOne(route, loginPath, {
+      data: postdata,
+      captureHeaders: true,
+      cookie: '',
+      timeout: 15000
+    }).then(function (response) {
+      var wrapper = response.result || {};
+      var body = unwrapBody(wrapper);
+      if (typeof body === 'string') {
+        try {
+          body = JSON.parse(body);
+        } catch (e) {}
+      }
+
+      if (!body || (!body.success && body.message !== 'Уже авторизован на сайте. Необходимо обновить страницу!')) {
+        throw new Error(body && body.message ? body.message : 'HDRezka не подтвердила вход');
+      }
+
+      var cookie = mergeSetCookie('', wrapper.headers || {});
+      if (!cookie) {
+        throw new Error('Прокси не вернул cookie HDRezka');
+      }
+
+      var sid = cookieObject(cookie).PHPSESSID || randomId(26);
+      set(STORAGE.sid, sid);
+
+      function validate(currentCookie, pass) {
+        return requestOne(route, '/', {
+          captureHeaders: true,
+          cookie: currentCookie,
+          timeout: 15000
+        }).then(function (rootResponse) {
+          var rootWrapper = rootResponse.result || {};
+          var html = String(unwrapBody(rootWrapper) || '');
+          currentCookie = mergeSetCookie(currentCookie, rootWrapper.headers || {});
+
+          var verify = parseVerifyCookie(html);
+          if (verify && pass < 2) {
+            var values = cookieObject(currentCookie);
+            values[verify.name] = verify.value;
+            currentCookie = cookieString(values);
+            return validate(currentCookie, pass + 1);
+          }
+
+          var reason = inspectHtml(html);
+          if (reason && reason !== 'HDRezka требует cookie зеркала') {
+            throw new Error(reason);
+          }
+
+          if (/<form[^>]+id=["']check-form["'][^>]*>/i.test(html)) {
+            throw new Error('HDRezka не сохранила авторизацию');
+          }
+
+          return currentCookie;
+        });
+      }
+
+      return validate(cookie, 0).then(function (finalCookie) {
+        set(STORAGE.cookie, finalCookie);
+        set(STORAGE.status, 'true');
+        set(STORAGE.authMode, 'proxy');
+        set(STORAGE.activeHost, route.host);
+        set(STORAGE.password, '');
+        syncToOnlineMod(finalCookie);
+        return true;
+      });
+    });
+  }
+
+  function proxyLogin(login, password) {
+    var routes = routeCandidates(true);
+    var i = 0;
+    var lastError = null;
+
+    function next() {
+      if (i >= routes.length) {
+        throw new Error(lastError && lastError.message ? lastError.message : 'Не удалось войти через TV-прокси');
+      }
+
+      var route = routes[i++];
+      return proxyLoginRoute(route, login, password)
+        .catch(function (error) {
+          lastError = error;
+          return next();
+        });
+    }
+
+    return Promise.resolve().then(next);
+  }
+
+  function directLogin(login, password) {
+    var route = { host: directMirror(), proxy: '', kind: 'direct' };
+    var postdata =
+      'login_name=' + encodeURIComponent(login) +
+      '&login_password=' + encodeURIComponent(password) +
+      '&login_not_save=0';
+
+    return requestOne(route, '/ajax/login/', {
+      data: postdata,
+      timeout: 12000
+    }).then(function (response) {
+      var json = response.result;
+      if (typeof json === 'string') {
+        try { json = JSON.parse(json); } catch (e) {}
+      }
+
+      if (!json || (!json.success && json.message !== 'Уже авторизован на сайте. Необходимо обновить страницу!')) {
+        throw new Error(json && json.message ? json.message : 'HDRezka не подтвердила вход');
+      }
+
+      return requestOne(route, '/', {
+        dataType: 'text',
+        timeout: 12000
+      }).then(function (root) {
+        var html = String(root.result || '');
+        var reason = inspectHtml(html);
+        if (reason) throw new Error(reason);
+
+        set(STORAGE.status, 'true');
+        set(STORAGE.authMode, 'browser');
+        set(STORAGE.activeHost, route.host);
+        set(STORAGE.password, '');
+        return true;
+      });
+    });
+  }
+
+  function proxyConsent() {
+    if (!shouldProxy()) return Promise.resolve(true);
+    if (setting(STORAGE.proxyAck, '0') === '1') return Promise.resolve(true);
+
+    return new Promise(function (resolve, reject) {
+      var enabled = null;
+      try {
+        enabled = Lampa.Controller.enabled().name;
+      } catch (e) {}
+
+      Lampa.Select.show({
+        title: 'HDREZKA • вход на VIDAA',
+        items: [
+          {
+            title: 'Продолжить',
+            subtitle: 'На TV используется совместимый CORS-прокси как в Online Mod. Прокси технически видит запрос входа и cookie.',
+            allow: true
+          },
+          {
+            title: 'Отмена',
+            subtitle: 'Можно вставить cookie вручную в настройках.',
+            allow: false
+          }
+        ],
+        onSelect: function (item) {
+          try { Lampa.Select.hide(); } catch (e) {}
+          if (item.allow) {
+            set(STORAGE.proxyAck, '1');
+            resolve(true);
+          } else {
+            reject(new Error('Вход отменён'));
+          }
+          if (enabled) {
+            try { Lampa.Controller.toggle(enabled); } catch (e) {}
           }
         },
-        2500
-      );
-
-    if (
-      sameOrigin() &&
-      window.Lampa &&
-      Lampa.Reguest
-    ) {
-      return new Promise(
-        function (
-          resolve,
-          reject
-        ) {
-          var network =
-            new Lampa.Reguest();
-
-          network.timeout(
-            65000
-          );
-
-          network.silent(
-            API +
-            rpcPath(
-              path
-            ),
-
-            function (
-              result
-            ) {
-              clearTimeout(
-                wakeTimer
-              );
-
-              wakeStatus(
-                '● SAME ORIGIN • online'
-              );
-
-              resolve(
-                result
-              );
-            },
-
-            function (
-              xhr,
-              exception
-            ) {
-              clearTimeout(
-                wakeTimer
-              );
-
-              var status =
-                xhr &&
-                xhr.status
-                  ? Number(
-                      xhr.status
-                    )
-                  : 0;
-
-              var retryable =
-                !status ||
-                status === 408 ||
-                status === 429 ||
-                status === 500 ||
-                status === 502 ||
-                status === 503 ||
-                status === 504;
-
-              if (
-                retryable &&
-                attempt < 2
-              ) {
-                setTimeout(
-                  function () {
-                    rawPost(
-                      path,
-                      data,
-                      attempt + 1
-                    )
-                      .then(
-                        resolve
-                      )
-                      .catch(
-                        reject
-                      );
-                  },
-                  attempt === 0
-                    ? 1200
-                    : 2500
-                );
-
-                return;
-              }
-
-              reject(
-                new Error(
-                  decodeNetworkError(
-                    network,
-                    xhr,
-                    exception
-                  )
-                )
-              );
-            },
-
-            data ||
-            {},
-
-            {
-              dataType:
-                'json',
-
-              timeout:
-                65000,
-
-              attempts:
-                0
-            }
-          );
-        }
-      );
-    }
-
-    /*
-      Desktop / external-Lampa compatibility.
-    */
-    if (
-      typeof fetch ===
-      'function'
-    ) {
-      return fetch(
-        API +
-        path,
-        {
-          method:
-            'POST',
-
-          headers: {
-            'Content-Type':
-              'application/json'
-          },
-
-          body:
-            JSON.stringify(
-              data ||
-              {}
-            )
-        }
-      )
-        .then(
-          function (
-            response
-          ) {
-            clearTimeout(
-              wakeTimer
-            );
-
-            return response
-              .text()
-              .then(
-                function (
-                  text
-                ) {
-                  var json =
-                    null;
-
-                  try {
-                    json =
-                      JSON.parse(
-                        text
-                      );
-                  }
-                  catch (e) {}
-
-                  if (
-                    !response.ok
-                  ) {
-                    throw new Error(
-                      (
-                        json &&
-                        (
-                          json.detail ||
-                          json.error
-                        )
-                      ) ||
-                      (
-                        'HTTP ' +
-                        response.status
-                      )
-                    );
-                  }
-
-                  return json;
-                }
-              );
+        onBack: function () {
+          try { Lampa.Select.hide(); } catch (e) {}
+          reject(new Error('Вход отменён'));
+          if (enabled) {
+            try { Lampa.Controller.toggle(enabled); } catch (e) {}
           }
-        );
+        }
+      });
+    });
+  }
+
+  function loginAccount() {
+    var login = String(get(STORAGE.login, '') || '').trim();
+    var password = String(get(STORAGE.password, '') || '');
+
+    if (!login || !password) {
+      return Promise.reject(new Error('Введите логин и пароль HDRezka в настройках'));
     }
 
-    clearTimeout(
-      wakeTimer
-    );
+    return proxyConsent().then(function () {
+      if (shouldProxy()) {
+        return proxyLogin(login, password);
+      }
 
-    return Promise.reject(
-      new Error(
-        'Нет совместимого сетевого транспорта'
-      )
-    );
+      return directLogin(login, password).catch(function (directError) {
+        if (routeMode() !== 'auto') throw directError;
+        return proxyLogin(login, password);
+      });
+    }).then(function () {
+      notice('✅ HDRezka Premium подключена');
+      updateAccountButtons();
+      return true;
+    });
+  }
+
+  function logoutAccount() {
+    set(STORAGE.cookie, '');
+    set(STORAGE.sid, '');
+    set(STORAGE.status, 'false');
+    set(STORAGE.authMode, '');
+    set(STORAGE.activeHost, '');
+    set(STORAGE.password, '');
+
+    if (boolValue(STORAGE.syncOnlineMod, true)) {
+      set('online_mod_rezka2_cookie', '');
+      set('online_mod_rezka2_status', 'false');
+    }
+
+    updateAccountButtons();
+    notice('HDRezka отключена');
   }
 
   function accountConnected() {
-    return Boolean(
-      value(
-        STORAGE.session
-      )
-    );
+    if (setting(STORAGE.status, 'false') === 'true') return true;
+    if (activeCookie()) return true;
+    return false;
   }
 
-  function accountLabel() {
-    return (
-      value(
-        STORAGE.accountName
-      ) ||
-      value(
-        STORAGE.login
-      ) ||
-      'HDRezka'
-    );
-  }
-
-  var pairTimer =
-    null;
-
-  function stopPairPolling() {
-    if (
-      pairTimer
-    ) {
-      clearInterval(
-        pairTimer
-      );
-
-      pairTimer =
-        null;
+  function checkAccount() {
+    if (!accountConnected()) {
+      return Promise.reject(new Error('HDRezka не подключена'));
     }
+
+    return requestRezka('/', {
+      dataType: 'text',
+      rejectChallenge: false,
+      timeout: 12000
+    }).then(function (response) {
+      var html = String(unwrapBody(response.result) || '');
+      var reason = inspectHtml(html);
+
+      if (/<form[^>]+id=["']check-form["'][^>]*>/i.test(html)) {
+        set(STORAGE.status, 'false');
+        throw new Error('Сессия HDRezka истекла');
+      }
+
+      if (reason && reason !== 'HDRezka требует cookie зеркала') {
+        throw new Error(reason);
+      }
+
+      set(STORAGE.status, 'true');
+      updateAccountButtons();
+      return true;
+    });
+  }
+
+  function openSettings() {
+    try {
+      if (Lampa.Settings && Lampa.Settings.create) {
+        Lampa.Settings.create(SETTINGS);
+        return;
+      }
+    } catch (e) {}
+
+    try {
+      Lampa.Controller.toggle('settings');
+    } catch (e) {}
+
+    notice('Настройки → HDREZKA Premium • by DENYS');
+  }
+
+  function showDiagnostics() {
+    var platform = isMSX()
+      ? 'Media Station X'
+      : isAndroid()
+        ? 'Android'
+        : isPlatform('webos')
+          ? 'WebOS'
+          : isPlatform('tizen')
+            ? 'Tizen'
+            : 'Web';
+
+    var lines = [
+      'HDREZKA Premium • by DENYS v' + VERSION,
+      'Платформа: ' + platform,
+      'Режим сети: ' + routeMode(),
+      'Текущий host: ' + (setting(STORAGE.activeHost, '') || 'не выбран'),
+      'Mirror: ' + directMirror(),
+      'Cookie: ' + (activeCookie() ? 'есть' : 'нет'),
+      'Auth: ' + (setting(STORAGE.authMode, '') || 'нет'),
+      'Online Mod cookie: ' + (get('online_mod_rezka2_cookie', '') ? 'есть' : 'нет'),
+      'Последний маршрут: ' + (setting(STORAGE.lastRoute, '') || routeDebug || 'нет')
+    ];
+
+    var html = $('<div class="hdrezka-diag"></div>');
+    lines.forEach(function (line) {
+      html.append($('<div></div>').text(line));
+    });
+
+    var enabled = null;
+    try { enabled = Lampa.Controller.enabled().name; } catch (e) {}
+
+    try {
+      Lampa.Modal.open({
+        title: 'Диагностика HDREZKA',
+        html: html,
+        size: 'medium',
+        onBack: function () {
+          Lampa.Modal.close();
+          if (enabled) Lampa.Controller.toggle(enabled);
+        }
+      });
+    } catch (e) {
+      notice(lines.join(' • '));
+    }
+  }
+
+  function openAccountMenu() {
+    var items = [];
+
+    if (accountConnected()) {
+      items.push({
+        title: '✅ HDRezka подключена',
+        subtitle: String(get(STORAGE.login, '') || 'Premium-сессия'),
+        action: 'check'
+      });
+      items.push({
+        title: '🔄 Войти заново',
+        subtitle: 'Использовать логин/пароль из настроек',
+        action: 'login'
+      });
+      items.push({
+        title: '🚪 Отключить аккаунт',
+        subtitle: 'Удалить cookie с этого устройства',
+        action: 'logout'
+      });
+    } else {
+      items.push({
+        title: '🔐 Войти в HDRezka',
+        subtitle: 'Логин/пароль берутся из настроек',
+        action: 'login'
+      });
+      if (get('online_mod_rezka2_cookie', '')) {
+        items.push({
+          title: '⚡ Импортировать сессию Online Mod',
+          subtitle: 'Использовать уже сохранённую HDRezka-cookie',
+          action: 'import'
+        });
+      }
+    }
+
+    items.push({
+      title: '⚙ Настройки HDREZKA',
+      subtitle: 'Mirror, proxy, качество, плеер, таймкод',
+      action: 'settings'
+    });
+
+    items.push({
+      title: '🧪 Диагностика',
+      subtitle: 'Показать host/proxy/cookie/платформу',
+      action: 'diag'
+    });
+
+    var enabled = null;
+    try { enabled = Lampa.Controller.enabled().name; } catch (e) {}
+
+    Lampa.Select.show({
+      title: 'HDREZKA Premium • by DENYS',
+      items: items,
+      onSelect: function (item) {
+        try { Lampa.Select.hide(); } catch (e) {}
+
+        if (item.action === 'check') {
+          notice('HDREZKA: проверяем аккаунт…');
+          checkAccount()
+            .then(function () { notice('✅ Сессия HDRezka активна'); })
+            .catch(function (error) { notice('❌ ' + error.message); });
+        } else if (item.action === 'login') {
+          notice('HDREZKA: выполняем вход…');
+          loginAccount().catch(function (error) {
+            notice('❌ ' + error.message);
+            openSettings();
+          });
+        } else if (item.action === 'logout') {
+          logoutAccount();
+        } else if (item.action === 'import') {
+          importOnlineModSession(false);
+        } else if (item.action === 'settings') {
+          openSettings();
+        } else if (item.action === 'diag') {
+          showDiagnostics();
+        }
+
+        if (enabled && item.action !== 'settings' && item.action !== 'diag') {
+          try { Lampa.Controller.toggle(enabled); } catch (e) {}
+        }
+      },
+      onBack: function () {
+        try { Lampa.Select.hide(); } catch (e) {}
+        if (enabled) {
+          try { Lampa.Controller.toggle(enabled); } catch (e) {}
+        }
+      }
+    });
   }
 
   function updateAccountButtons() {
     try {
-      var connected =
-        accountConnected();
-
-      $('.view--hdrezka-account span')
-        .text(
-          connected
-            ? 'REZKA ✓'
-            : 'ВОЙТИ'
-        );
-
-      $('.view--hdrezka-account')
-        .attr(
-          'data-subtitle',
-          connected
-            ? (
-                'HDRezka подключена • ' +
-                accountLabel()
-              )
-            : (
-                'Подключить Premium-аккаунт HDRezka'
-              )
-        );
-    }
-    catch (e) {}
+      var connected = accountConnected();
+      $('.view--hdrezka-account span').text(connected ? 'REZKA ✓' : 'ВОЙТИ');
+      $('.view--hdrezka-account').attr(
+        'data-subtitle',
+        connected ? 'HDRezka Premium подключена' : 'Подключить Premium-аккаунт HDRezka'
+      );
+      $('.hdrezka-denys-brand__status').text(
+        connected
+          ? '● Premium подключён'
+          : '○ Требуется вход'
+      );
+    } catch (e) {}
   }
 
-  function pairStatus(
-    code
-  ) {
-    return rawPost(
-      '/api/pair/status',
-      {
-        code:
-          code
-      }
-    );
-  }
+  function parsePlaylist(str) {
+    var pl = [];
+    try {
+      if (startsWith(str, '[')) {
+        str.substring(1).split(/, *\[/).forEach(function (item) {
+          item = item.trim();
+          if (endsWith(item, ',')) item = item.substring(0, item.length - 1).trim();
+          var labelEnd = item.indexOf(']');
+          if (labelEnd >= 0) {
+            var label = item.substring(0, labelEnd).trim();
 
-  function openPairing() {
-    stopPairPolling();
-
-    notice(
-      'HDREZKA: создаём код подключения…'
-    );
-
-    rawPost(
-      '/api/pair/start',
-      {}
-    )
-      .then(
-        function (
-          result
-        ) {
-          if (
-            !result ||
-            !result.code
-          ) {
-            throw new Error(
-              'Сервер не вернул код подключения'
-            );
-          }
-
-          setValue(
-            STORAGE.pairCode,
-            result.code
-          );
-
-          var enabled =
-            null;
-
-          try {
-            enabled =
-              Lampa.Controller.enabled();
-          }
-          catch (e) {}
-
-          var html =
-            $('<div class="hdrezka-pair">' +
-              '<div class="hdrezka-pair__title">Подключение HDRezka Premium</div>' +
-              '<div class="hdrezka-pair__hint">Открой на телефоне или ПК:</div>' +
-              '<div class="hdrezka-pair__url"></div>' +
-              '<div class="hdrezka-pair__hint">и введи код:</div>' +
-              '<div class="hdrezka-pair__code"></div>' +
-              '<div class="hdrezka-pair__state">Ожидаем вход…</div>' +
-              '<div class="hdrezka-pair__brand">HDREZKA Premium • DENYS EDITION</div>' +
-            '</div>');
-
-          html
-            .find(
-              '.hdrezka-pair__url'
-            )
-            .text(
-              result.short_url ||
-              result.connect_url ||
-              (
-                API +
-                '/connect'
-              )
-            );
-
-          html
-            .find(
-              '.hdrezka-pair__code'
-            )
-            .text(
-              result.code
-            );
-
-          function closePair() {
-            stopPairPolling();
-
-            try {
-              Lampa.Modal.close();
-            }
-            catch (e) {}
-
-            try {
-              if (
-                enabled &&
-                enabled.name
-              ) {
-                Lampa.Controller.toggle(
-                  enabled.name
-                );
-              }
-              else {
-                Lampa.Controller.toggle(
-                  'content'
-                );
-              }
-            }
-            catch (e) {}
-          }
-
-          try {
-            Lampa.Modal.open({
-              title:
-                'HDREZKA • Подключить аккаунт',
-
-              html:
-                html,
-
-              size:
-                'medium',
-
-              onBack:
-                closePair
-            });
-          }
-          catch (e) {
-            notice(
-              'Код: ' +
-              result.code +
-              ' • ' +
-              (
-                result.short_url ||
-                result.connect_url
-              )
-            );
-          }
-
-          function check() {
-            pairStatus(
-              result.code
-            )
-              .then(
-                function (
-                  status
-                ) {
-                  if (
-                    !status
-                  ) {
-                    return;
-                  }
-
-                  if (
-                    status.status ===
-                    'connected' &&
-                    status.session
-                  ) {
-                    stopPairPolling();
-
-                    setValue(
-                      STORAGE.session,
-                      status.session
-                    );
-
-                    setValue(
-                      STORAGE.accountName,
-                      status.login ||
-                      'HDRezka'
-                    );
-
-                    /*
-                      После pairing пароль на TV не нужен.
-                    */
-                    setValue(
-                      STORAGE.password,
-                      ''
-                    );
-
-                    html
-                      .find(
-                        '.hdrezka-pair__state'
-                      )
-                      .text(
-                        '✅ Аккаунт подключён'
-                      );
-
-                    wakeStatus(
-                      '● HDRezka подключена'
-                    );
-
-                    updateAccountButtons();
-
-                    notice(
-                      '✅ HDRezka Premium подключена'
-                    );
-
-                    setTimeout(
-                      closePair,
-                      1000
-                    );
-                  }
-                  else if (
-                    status.status ===
-                    'expired'
-                  ) {
-                    stopPairPolling();
-
-                    html
-                      .find(
-                        '.hdrezka-pair__state'
-                      )
-                      .text(
-                        'Код истёк. Открой подключение заново.'
-                      );
-                  }
+            if (item.charAt(labelEnd + 1) === '{') {
+              item.substring(labelEnd + 2).split(/; *\{/).forEach(function (voiceItem) {
+                voiceItem = voiceItem.trim();
+                if (endsWith(voiceItem, ';')) {
+                  voiceItem = voiceItem.substring(0, voiceItem.length - 1).trim();
                 }
-              )
-              .catch(
-                function (
-                  error
-                ) {
-                  html
-                    .find(
-                      '.hdrezka-pair__state'
-                    )
-                    .text(
-                      'Связь: ' +
-                      error.message
-                    );
+                var voiceEnd = voiceItem.indexOf('}');
+                if (voiceEnd >= 0) {
+                  var voice = voiceItem.substring(0, voiceEnd).trim();
+                  pl.push({
+                    label: label,
+                    voice: voice,
+                    links: voiceItem.substring(voiceEnd + 1).split(' or ').map(function (link) {
+                      return link.trim();
+                    }).filter(function (link) { return link; })
+                  });
                 }
-              );
+              });
+            } else {
+              pl.push({
+                label: label,
+                links: item.substring(labelEnd + 1).split(' or ').map(function (link) {
+                  return link.trim();
+                }).filter(function (link) { return link; })
+              });
+            }
           }
+        });
 
-          check();
+        pl = pl.filter(function (item) {
+          return item.links && item.links.length;
+        });
+      }
+    } catch (e) {}
 
-          pairTimer =
-            setInterval(
-              check,
-              3000
-            );
-        }
-      )
-      .catch(
-        function (
-          error
-        ) {
-          notice(
-            'HDREZKA: ' +
-            error.message
-          );
-        }
-      );
+    return pl;
   }
 
-  function disconnectAccount() {
-    stopPairPolling();
+  function decodeRezka(data) {
+    if (!startsWith(data, '#')) return data;
 
-    setValue(
-      STORAGE.session,
-      ''
-    );
-
-    setValue(
-      STORAGE.accountName,
-      ''
-    );
-
-    setValue(
-      STORAGE.password,
-      ''
-    );
-
-    updateAccountButtons();
-
-    notice(
-      'HDRezka отключена'
-    );
-  }
-
-  function checkAccount() {
-    var session =
-      value(
-        STORAGE.session
+    function enc(str) {
+      return btoa(
+        encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, function (match, p1) {
+          return String.fromCharCode('0x' + p1);
+        })
       );
-
-    if (!session) {
-      openPairing();
-      return;
     }
 
-    notice(
-      'HDREZKA: проверяем аккаунт…'
-    );
-
-    rawPost(
-      '/api/status',
-      {
-        session:
-          session
-      }
-    )
-      .then(
-        function (
-          result
-        ) {
-          if (
-            result &&
-            result.authenticated
-          ) {
-            notice(
-              '✅ HDRezka: аккаунт активен'
-            );
-          }
-          else {
-            notice(
-              '⚠ HDRezka: нужна повторная авторизация'
-            );
-          }
-        }
-      )
-      .catch(
-        function (
-          error
-        ) {
-          notice(
-            'HDREZKA: ' +
-            error.message
-          );
-        }
+    function dec(str) {
+      return decodeURIComponent(
+        atob(str).split('').map(function (c) {
+          return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join('')
       );
-  }
-
-  function openAccountMenu() {
-    if (
-      !accountConnected()
-    ) {
-      openPairing();
-      return;
     }
 
-    var items = [
-      {
-        title:
-          '✅ ' +
-          accountLabel(),
-
-        subtitle:
-          'Проверить подключение HDRezka',
-
-        action:
-          'status'
-      },
-      {
-        title:
-          '🔄 Подключить другой аккаунт',
-
-        subtitle:
-          'Получить новый код входа',
-
-        action:
-          'pair'
-      },
-      {
-        title:
-          '🚪 Отключить HDRezka',
-
-        subtitle:
-          'Удалить сессию с этого устройства',
-
-        action:
-          'logout'
-      }
+    var trashList = [
+      '$$!!@$$@^!@#$$@',
+      '@@@@@!##!^^^',
+      '####^!!##!@@',
+      '^^^!@##!!##',
+      '$$#!!@#!@##'
     ];
 
+    var x = data.substring(2);
+    trashList.forEach(function (trash) {
+      x = x.replace('//_//' + enc(trash), '');
+    });
+
     try {
-      Lampa.Select.show({
-        title:
-          'HDREZKA Premium • by DENYS',
-
-        items:
-          items,
-
-        onSelect:
-          function (
-            item
-          ) {
-            try {
-              Lampa.Select.hide();
-            }
-            catch (e) {}
-
-            if (
-              item.action ===
-              'status'
-            ) {
-              checkAccount();
-            }
-            else if (
-              item.action ===
-              'pair'
-            ) {
-              openPairing();
-            }
-            else if (
-              item.action ===
-              'logout'
-            ) {
-              disconnectAccount();
-            }
-          },
-
-        onBack:
-          function () {
-            try {
-              Lampa.Select.hide();
-            }
-            catch (e) {}
-          }
-      });
+      x = dec(x);
+    } catch (e) {
+      x = '';
     }
-    catch (e) {
-      checkAccount();
-    }
+
+    return x;
   }
 
+  function qualityNumber(label) {
+    var match = String(label || '').match(/(\d\d\d+)/);
+    if (match) return parseInt(match[1], 10);
 
-  function login() {
-    var login =
-      value(STORAGE.login).trim();
+    match = String(label || '').match(/(\d+)K/i);
+    if (match) return parseInt(match[1], 10) * 1000;
 
-    var password =
-      value(STORAGE.password);
+    return 0;
+  }
 
-    if (!login || !password) {
-      return Promise.reject(
-        new Error(
-          'Аккаунт не подключён. Нажмите REZKA / ВОЙТИ и подключите его по коду.'
-        )
+  function chooseStreamLink(item) {
+    var mode = setting(STORAGE.format, 'hls');
+    var links = item.links || [];
+    var filtered = [];
+
+    if (mode === 'mp4') {
+      filtered = links.filter(function (url) {
+        return /\.mp4(\?|$)/i.test(url);
+      });
+    } else if (mode === 'hls') {
+      filtered = links.filter(function (url) {
+        return /\.m3u8(\?|$)/i.test(url) || /:hls:manifest\.m3u8/i.test(url);
+      });
+    }
+
+    if (!filtered.length) filtered = links;
+    return filtered[0] || '';
+  }
+
+  function processStream(url) {
+    if (!url) return url;
+
+    var mode = setting(STORAGE.streamMode, 'off');
+
+    if (mode === 'fix') {
+      return url.replace(
+        /\/\/(stream\.voidboost\.(cc|top|link|club)|[^\/]*\.ukrtelcdn\.net)\//i,
+        '//femeretes.org/'
       );
     }
 
-    notice(
-      'HDREZKA Premium by DENYS: вход в аккаунт…'
-    );
-
-    return rawPost(
-      '/api/login',
-      {
-        login: login,
-        password: password
-      }
-    ).then(function (data) {
-      if (
-        !data ||
-        !data.session
-      ) {
-        throw new Error(
-          'Сервер не вернул сессию'
-        );
-      }
-
-      setValue(
-        STORAGE.session,
-        data.session
+    if (mode === 'ukr') {
+      var host = setting(STORAGE.streamProxy, 'prx.ukrtelcdn.net');
+      return url.replace(
+        /\/\/(stream\.voidboost\.(cc|top|link|club)|[^\/]*\.ukrtelcdn\.net|vdbmate\.org|sambray\.org|rumbegg\.org|laptostack\.org|frntroy\.org|femeretes\.org)\//i,
+        '//' + host + '/'
       );
+    }
 
-      setValue(
-        STORAGE.host,
-        data.host || ''
-      );
+    return url;
+  }
 
-      wakeStatus(
-        '● Аккаунт подключён · ' +
-        (
-          data.host ||
-          value(STORAGE.host) ||
-          'HDRezka'
-        )
-          .replace('https://', '')
-          .replace(/\/$/, '')
-      );
+  function streamsFromPayload(str) {
+    var decoded = decodeRezka(str || '');
+    var list = parsePlaylist(decoded);
+    var rows = [];
 
-      setValue(
-        STORAGE.accountName,
-        login
-      );
+    list.forEach(function (item) {
+      var link = chooseStreamLink(item);
+      if (!link) return;
+      rows.push({
+        label: item.label,
+        quality: qualityNumber(item.label),
+        file: processStream(link)
+      });
+    });
 
-      updateAccountButtons();
+    rows.sort(function (a, b) {
+      if (b.quality !== a.quality) return b.quality - a.quality;
+      return String(b.label).localeCompare(String(a.label));
+    });
 
-      notice(
-        '✅ HDREZKA Premium: аккаунт авторизован'
-      );
+    return rows;
+  }
 
-      return data.session;
+  function subtitlesFromPayload(str) {
+    if (!str) return [];
+    return parsePlaylist(str).map(function (item) {
+      return {
+        label: item.label,
+        url: item.links && item.links[0] ? item.links[0] : ''
+      };
+    }).filter(function (item) {
+      return item.url;
     });
   }
 
-  function ensureSession() {
-    var session =
-      value(STORAGE.session);
+  function pickQuality(qualityMap, fallback) {
+    if (!qualityMap) return fallback;
 
-    if (session) {
-      return Promise.resolve(
-        session
-      );
-    }
+    var preferred = setting(STORAGE.quality, 'max');
+    var labels = Object.keys(qualityMap);
 
-    return login();
+    if (!labels.length) return fallback;
+    if (preferred === 'max') return qualityMap[labels[0]] || fallback;
+
+    var target = parseInt(preferred, 10) || 1080;
+    var rows = labels.map(function (label) {
+      return {
+        label: label,
+        q: qualityNumber(label),
+        url: qualityMap[label]
+      };
+    }).sort(function (a, b) {
+      return b.q - a.q;
+    });
+
+    var picked = null;
+    rows.forEach(function (row) {
+      if (!picked && row.q <= target) picked = row;
+    });
+
+    if (!picked) picked = rows[rows.length - 1];
+    return picked && picked.url ? picked.url : fallback;
   }
 
-  function api(path, data, retry) {
-    retry =
-      typeof retry === 'undefined'
-        ? true
-        : retry;
+  function renameQualityMap(map) {
+    if (!map) return map;
+    var renamed = {};
+    for (var label in map) {
+      if (map.hasOwnProperty(label)) renamed['\u200B' + label] = map[label];
+    }
+    return renamed;
+  }
 
-    return ensureSession()
-      .then(function (session) {
-        data = data || {};
-        data.session = session;
+  function normalizeTitle(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/ё/g, 'е')
+      .replace(/[^a-zа-я0-9]+/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
 
-        return rawPost(
-          path,
-          data
+  function levenshtein(a, b) {
+    a = normalizeTitle(a);
+    b = normalizeTitle(b);
+    if (a === b) return 0;
+    if (!a.length) return b.length;
+    if (!b.length) return a.length;
+
+    var v0 = [];
+    var v1 = [];
+    var i;
+    for (i = 0; i <= b.length; i++) v0[i] = i;
+
+    for (i = 0; i < a.length; i++) {
+      v1[0] = i + 1;
+
+      for (var j = 0; j < b.length; j++) {
+        var cost = a.charAt(i) === b.charAt(j) ? 0 : 1;
+        v1[j + 1] = Math.min(
+          v1[j] + 1,
+          v0[j + 1] + 1,
+          v0[j] + cost
         );
-      })
-      .catch(function (error) {
-        var message =
-          String(
-            error &&
-            error.message ||
-            ''
-          );
-
-        if (
-          retry &&
-          (
-            message.indexOf('401') !== -1 ||
-            message.toLowerCase().indexOf('сесс') !== -1 ||
-            message.toLowerCase().indexOf('автор') !== -1
-          )
-        ) {
-          setValue(
-            STORAGE.session,
-            ''
-          );
-
-          return login().then(
-            function () {
-              return api(
-                path,
-                data,
-                false
-              );
-            }
-          );
-        }
-
-        throw error;
-      });
-  }
-
-
-  /*
-    ============================================================
-    DENYS PLAYBACK ENGINE v3
-    ============================================================
-    Не надеемся только на Lampa.Timeline.handler.
-    Берём фактический currentTime у HTML5 video и сохраняем его
-    каждые ~2 секунды + на pause/seeking/destroy/ended.
-    Параллельно обновляем нативный Lampa.Timeline.
-  */
-  var DenysPlayback = (function () {
-    var active = null;
-    var video = null;
-    var handlers = null;
-    var pollTimer = null;
-    var saveTimer = null;
-    var bindAttempts = 0;
-    var resumeApplied = false;
-
-    function savedMap() {
-      return readJson(STORAGE.playback);
-    }
-
-    function getSaved(key) {
-      var all = savedMap();
-      return all[key] || {};
-    }
-
-    function getVideo() {
-      var v = null;
-
-      try {
-        if (
-          Lampa.Player &&
-          typeof Lampa.Player.video === 'function'
-        ) {
-          v = Lampa.Player.video();
-        }
-      } catch (e) {}
-
-      if (!v || typeof v.currentTime === 'undefined') {
-        try {
-          v = document.querySelector('.player video') ||
-              document.querySelector('video');
-        } catch (e) {}
       }
 
-      return v && typeof v.currentTime !== 'undefined' ? v : null;
+      var tmp = v0;
+      v0 = v1;
+      v1 = tmp;
     }
 
-    function threshold() {
-      var n = parseInt(setting(STORAGE.watchedAt, '95'), 10);
-      return n >= 70 && n <= 100 ? n : 95;
+    return v0[b.length];
+  }
+
+  function titleScore(a, b) {
+    a = normalizeTitle(a);
+    b = normalizeTitle(b);
+    if (!a || !b) return 0;
+    if (a === b) return 100;
+    if (a.indexOf(b) !== -1 || b.indexOf(a) !== -1) return 88;
+
+    var max = Math.max(a.length, b.length);
+    var distance = levenshtein(a, b);
+    return Math.round((1 - distance / max) * 100);
+  }
+
+  function movieYear(movie) {
+    var date = movie.release_date || movie.first_air_date || movie.last_air_date || '';
+    var year = parseInt(String(date).slice(0, 4), 10);
+    return year || 0;
+  }
+
+  function movieTitle(movie) {
+    return movie.title || movie.name || movie.original_title || movie.original_name || '';
+  }
+
+  function originalTitle(movie) {
+    return movie.original_title || movie.original_name || '';
+  }
+
+  function searchResultScore(row, movie) {
+    var score = Math.max(
+      titleScore(row.title, movieTitle(movie)),
+      titleScore(row.title, originalTitle(movie)),
+      titleScore(row.orig_title, originalTitle(movie))
+    );
+
+    var wanted = movieYear(movie);
+    if (wanted && row.year) {
+      var diff = Math.abs(wanted - row.year);
+      if (diff === 0) score += 20;
+      else if (diff === 1) score += 6;
+      else if (diff >= 3) score -= 18;
     }
 
-    function snapshot(forcePercent) {
-      if (!active) return null;
+    return score;
+  }
 
-      var v = video || getVideo();
-      var old = getSaved(active.key);
+  function parseFastSearch(html, host) {
+    var root = $('<div>' + String(html || '') + '</div>');
+    var nodes = root.find('.b-search__section_list li, .b-search__live_section li');
+    if (!nodes.length) nodes = root.find('li');
 
-      var time = old.time || 0;
-      var duration = old.duration || 0;
+    var rows = [];
+    var seen = {};
 
-      try {
-        if (v) {
-          if (isFinite(v.currentTime)) time = Math.max(0, Number(v.currentTime) || 0);
-          if (isFinite(v.duration)) duration = Math.max(0, Number(v.duration) || 0);
+    nodes.each(function () {
+      var a = $(this).find('a').first();
+      var href = a.attr('href') || '';
+      if (!href) return;
+
+      var enty = a.find('.enty').first();
+      var title = enty.text().trim();
+      var clone = a.clone();
+      clone.find('.enty,.rating').remove();
+      var tail = clone.text().trim();
+
+      if (!title) title = a.text().trim();
+
+      var yearMatch = tail.match(/\b((?:19|20)\d{2})\b/);
+      var year = yearMatch ? parseInt(yearMatch[1], 10) : 0;
+
+      var orig = '';
+      var altMatch = tail.match(/^\s*([^а-яА-ЯёЁ]+),\s*(?:19|20)\d{2}/);
+      if (altMatch) orig = altMatch[1].trim();
+
+      var link = forceHost(href, host);
+      if (!seen[link]) {
+        seen[link] = true;
+        rows.push({
+          title: title,
+          orig_title: orig,
+          year: year,
+          link: link
+        });
+      }
+    });
+
+    return rows;
+  }
+
+  function parseFullSearch(html, host) {
+    var root = $('<div>' + String(html || '') + '</div>');
+    var rows = [];
+    var seen = {};
+
+    root.find('.b-content__inline_item').each(function () {
+      var block = $(this).find('.b-content__inline_item-link').first();
+      var a = block.find('a').first();
+      var href = a.attr('href') || '';
+      if (!href) return;
+
+      var title = a.text().trim();
+      var info = block.find('div').last().text().trim();
+      var yearMatch = info.match(/\b((?:19|20)\d{2})\b/);
+      var year = yearMatch ? parseInt(yearMatch[1], 10) : 0;
+      var link = forceHost(href, host);
+
+      if (!seen[link]) {
+        seen[link] = true;
+        rows.push({
+          title: title,
+          orig_title: '',
+          year: year,
+          link: link
+        });
+      }
+    });
+
+    return rows;
+  }
+
+  function searchQuery(query) {
+    var post = 'q=' + encodeURIComponent(query);
+
+    return requestRezka('/engine/ajax/search.php', {
+      data: post,
+      dataType: 'text',
+      rejectChallenge: true,
+      timeout: 12000
+    }).then(function (response) {
+      var html = String(response.result || '');
+      var rows = parseFastSearch(html, response.route.host);
+      if (rows.length) return rows;
+
+      return requestRezka(
+        '/search/?do=search&subaction=search&q=' + encodeURIComponent(query) + '&page=1',
+        {
+          dataType: 'text',
+          rejectChallenge: true,
+          timeout: 12000,
+          routes: [response.route]
         }
-      } catch (e) {}
+      ).then(function (full) {
+        return parseFullSearch(String(full.result || ''), full.route.host);
+      });
+    });
+  }
 
-      var percent = duration > 0 ? Math.max(0, Math.min(100, time / duration * 100)) : (old.percent || 0);
-      if (typeof forcePercent === 'number') percent = forcePercent;
+  function resolveMovie(movie, manualQuery) {
+    var queries = [];
+    if (manualQuery) queries.push(manualQuery);
+    if (movieTitle(movie)) queries.push(movieTitle(movie));
+    if (originalTitle(movie) && queries.indexOf(originalTitle(movie)) === -1) {
+      queries.push(originalTitle(movie));
+    }
 
-      return {
-        time: time,
-        duration: duration,
-        percent: percent,
-        completed: percent >= threshold(),
-        updated: Date.now(),
-        season: active.season || null,
-        episode: active.episode || null,
-        title: active.title || '',
-        voice: active.voice || ''
+    var index = 0;
+    var collected = [];
+
+    function next() {
+      if (index >= queries.length) return Promise.resolve(collected);
+
+      var query = queries[index++];
+      return searchQuery(query)
+        .then(function (rows) {
+          rows.forEach(function (row) {
+            if (!collected.some(function (x) { return x.link === row.link; })) {
+              collected.push(row);
+            }
+          });
+
+          if (collected.length) return collected;
+          return next();
+        })
+        .catch(function (error) {
+          if (index < queries.length) return next();
+          throw error;
+        });
+    }
+
+    return next().then(function (rows) {
+      rows.forEach(function (row) {
+        row.score = searchResultScore(row, movie);
+      });
+
+      rows.sort(function (a, b) {
+        return b.score - a.score;
+      });
+
+      return rows;
+    });
+  }
+
+  function parsePage(html, url) {
+    var str = String(html || '').replace(/\n/g, '');
+    var challenge = inspectHtml(str);
+    if (challenge) throw new Error(challenge);
+
+    var extract = {
+      url: url,
+      voice: [],
+      season: [],
+      episode: [],
+      voice_data: {},
+      is_series: false,
+      film_id: '',
+      favs: '',
+      blocked: false
+    };
+
+    var translation = str.match(/<h2>В переводе<\/h2>:<\/td>\s*(<td>.*?<\/td>)/);
+    var cdnSeries = str.match(/\.initCDNSeriesEvents\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,/);
+    var cdnMovie = str.match(/\.initCDNMoviesEvents\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,/);
+    var devVoiceName = '';
+
+    if (translation) {
+      try { devVoiceName = $(translation[1]).text().trim(); } catch (e) {}
+    }
+    if (!devVoiceName) devVoiceName = 'Оригинал';
+
+    var defVoice = null;
+    var defSeason = null;
+    var defEpisode = null;
+
+    if (cdnSeries) {
+      extract.is_series = true;
+      extract.film_id = cdnSeries[1];
+      defVoice = {
+        name: devVoiceName,
+        id: cdnSeries[2]
+      };
+      defSeason = {
+        name: 'Сезон ' + cdnSeries[3],
+        id: cdnSeries[3]
+      };
+      defEpisode = {
+        name: 'Серия ' + cdnSeries[4],
+        season_id: cdnSeries[3],
+        episode_id: cdnSeries[4],
+        translator_id: cdnSeries[2]
+      };
+    } else if (cdnMovie) {
+      extract.film_id = cdnMovie[1];
+      defVoice = {
+        name: devVoiceName,
+        id: cdnMovie[2],
+        is_camrip: cdnMovie[3],
+        is_ads: cdnMovie[4],
+        is_director: cdnMovie[5]
       };
     }
 
-    function persist(forcePercent) {
-      if (!active) return;
+    var voices = str.match(/(<ul id="translators-list"[\s\S]*?<\/ul>)/);
+    if (voices) {
+      var voiceRoot = $(voices[1]);
 
-      var data = snapshot(forcePercent);
-      if (!data) return;
+      $('.b-translator__item', voiceRoot).each(function () {
+        var title = ($(this).attr('title') || $(this).text() || '').trim();
 
-      var all = savedMap();
-      all[active.key] = data;
-      writeJson(STORAGE.playback, all);
+        $('img', this).each(function () {
+          var lang = ($(this).attr('title') || $(this).attr('alt') || '').trim();
+          if (lang && title.indexOf(lang) === -1) title += ' (' + lang + ')';
+        });
 
-      try {
-        if (
-          active.timelineHash &&
-          Lampa.Timeline &&
-          Lampa.Timeline.update
-        ) {
-          Lampa.Timeline.update({
-            hash: active.timelineHash,
-            percent: data.percent,
-            time: data.time,
-            duration: data.duration,
-            received: true
+        extract.voice.push({
+          name: title || 'Оригинал',
+          id: $(this).attr('data-translator_id'),
+          is_camrip: $(this).attr('data-camrip'),
+          is_ads: $(this).attr('data-ads'),
+          is_director: $(this).attr('data-director')
+        });
+      });
+    }
+
+    if (!extract.voice.length && defVoice) extract.voice.push(defVoice);
+
+    if (extract.is_series) {
+      var seasons = str.match(/(<ul id="simple-seasons-tabs"[\s\S]*?<\/ul>)/);
+      if (seasons) {
+        var seasonRoot = $(seasons[1]);
+        $('.b-simple_season__item', seasonRoot).each(function () {
+          extract.season.push({
+            name: $(this).text().trim(),
+            id: $(this).attr('data-tab_id')
           });
+        });
+      }
+      if (!extract.season.length && defSeason) extract.season.push(defSeason);
+
+      var episodes = str.match(/(<div id="simple-episodes-tabs"[\s\S]*?<\/div>)/);
+      if (episodes) {
+        var epRoot = $(episodes[1]);
+        $('.b-simple_episode__item', epRoot).each(function () {
+          extract.episode.push({
+            name: $(this).text().trim(),
+            translator_id: defVoice ? defVoice.id : '',
+            season_id: $(this).attr('data-season_id'),
+            episode_id: $(this).attr('data-episode_id')
+          });
+        });
+      }
+      if (!extract.episode.length && defEpisode) extract.episode.push(defEpisode);
+    }
+
+    var favs = str.match(/<input type="hidden" id="ctrl_favs" value="([^"]*)"/);
+    if (favs) extract.favs = favs[1];
+
+    if (/class="b-player__restricted__block_message"/.test(str)) {
+      extract.blocked = true;
+    }
+
+    if (!extract.film_id) {
+      throw new Error('HDRezka: страница открылась, но player ID не найден');
+    }
+
+    return extract;
+  }
+
+  function fetchPage(link) {
+    return requestRezka(link, {
+      dataType: 'text',
+      rejectChallenge: true,
+      timeout: 15000
+    }).then(function (response) {
+      return parsePage(String(response.result || ''), forceHost(link, response.route.host));
+    });
+  }
+
+  function fetchEpisodes(details, voice) {
+    if (!details.is_series) return Promise.resolve(details);
+
+    var translatorId = voice.id;
+    if (details.voice_data[translatorId]) {
+      details.season = details.voice_data[translatorId].season;
+      details.episode = details.voice_data[translatorId].episode;
+      return Promise.resolve(details);
+    }
+
+    var postdata =
+      'id=' + encodeURIComponent(details.film_id) +
+      '&translator_id=' + encodeURIComponent(translatorId) +
+      '&favs=' + encodeURIComponent(details.favs || '') +
+      '&action=get_episodes';
+
+    return requestRezka('/ajax/get_cdn_series/?t=' + Date.now(), {
+      data: postdata,
+      timeout: 12000
+    }).then(function (response) {
+      var json = response.result;
+      if (typeof json === 'string') {
+        try { json = JSON.parse(json); } catch (e) {}
+      }
+
+      if (!json || (!json.seasons && !json.episodes)) {
+        throw new Error(json && json.message ? json.message : 'HDRezka не вернула список серий');
+      }
+
+      var data = { season: [], episode: [] };
+
+      if (json.seasons) {
+        var seasonRoot = $('<ul>' + json.seasons + '</ul>');
+        $('.b-simple_season__item', seasonRoot).each(function () {
+          data.season.push({
+            name: $(this).text().trim(),
+            id: $(this).attr('data-tab_id')
+          });
+        });
+      }
+
+      if (json.episodes) {
+        var episodeRoot = $('<div>' + json.episodes + '</div>');
+        $('.b-simple_episode__item', episodeRoot).each(function () {
+          data.episode.push({
+            name: $(this).text().trim(),
+            translator_id: translatorId,
+            season_id: $(this).attr('data-season_id'),
+            episode_id: $(this).attr('data-episode_id')
+          });
+        });
+      }
+
+      details.voice_data[translatorId] = data;
+      details.season = data.season;
+      details.episode = data.episode;
+      return details;
+    });
+  }
+
+  function streamKey(details, media) {
+    return [
+      details.url,
+      media && (media.translator_id || media.id) || '',
+      media && media.season_id || '',
+      media && media.episode_id || ''
+    ].join('|');
+  }
+
+  var streamCache = {};
+
+  function fetchStream(details, media) {
+    var key = streamKey(details, media);
+    if (streamCache[key]) return streamCache[key];
+
+    var postdata = 'id=' + encodeURIComponent(details.film_id);
+
+    if (details.is_series) {
+      postdata += '&translator_id=' + encodeURIComponent(media.translator_id);
+      postdata += '&season=' + encodeURIComponent(media.season_id);
+      postdata += '&episode=' + encodeURIComponent(media.episode_id);
+      postdata += '&favs=' + encodeURIComponent(details.favs || '');
+      postdata += '&action=get_stream';
+    } else {
+      postdata += '&translator_id=' + encodeURIComponent(media.id);
+      postdata += '&is_camrip=' + encodeURIComponent(media.is_camrip || 0);
+      postdata += '&is_ads=' + encodeURIComponent(media.is_ads || 0);
+      postdata += '&is_director=' + encodeURIComponent(media.is_director || 0);
+      postdata += '&favs=' + encodeURIComponent(details.favs || '');
+      postdata += '&action=get_movie';
+    }
+
+    var promise = requestRezka('/ajax/get_cdn_series/?t=' + Date.now(), {
+      data: postdata,
+      timeout: 15000
+    }).then(function (response) {
+      var json = response.result;
+      if (typeof json === 'string') {
+        try { json = JSON.parse(json); } catch (e) {}
+      }
+
+      if (!json || !json.url) {
+        var message = json && json.message ? json.message : '';
+        if (json && json.premium_content) {
+          message = message || 'Этот перевод требует HDRezka Premium';
+        }
+        throw new Error(message || 'HDRezka не вернула видеопоток');
+      }
+
+      var rows = streamsFromPayload(json.url);
+      if (!rows.length) throw new Error('HDRezka вернула поток, но не удалось разобрать качества');
+
+      var quality = {};
+      rows.forEach(function (row) {
+        quality[row.label] = row.file;
+      });
+
+      return {
+        url: rows[0].file,
+        quality: quality,
+        subtitles: subtitlesFromPayload(json.subtitle || '')
+      };
+    }).catch(function (error) {
+      delete streamCache[key];
+      throw error;
+    });
+
+    streamCache[key] = promise;
+    return promise;
+  }
+
+  function timelineBase(movie) {
+    return movie.original_title || movie.original_name || movie.title || movie.name || 'HDRezka';
+  }
+
+  function timelineHash(movie, media) {
+    var base = timelineBase(movie);
+
+    if (media && media.season_id && media.episode_id) {
+      var season = parseInt(media.season_id, 10) || 1;
+      return Lampa.Utils.hash([
+        season,
+        season > 10 ? ':' : '',
+        media.episode_id,
+        base
+      ].join(''));
+    }
+
+    return Lampa.Utils.hash(base);
+  }
+
+  function timelineView(movie, media) {
+    return Lampa.Timeline.view(timelineHash(movie, media));
+  }
+
+  function watchedThreshold() {
+    var value = parseInt(setting(STORAGE.watchedAt, '95'), 10);
+    if (!value || value < 50 || value > 100) value = 95;
+    return value;
+  }
+
+  function choiceKey(movie) {
+    return String(movie.id || timelineBase(movie)) + '|' + String(movieYear(movie) || '');
+  }
+
+  function loadChoice(movie) {
+    return readJson(STORAGE.choices)[choiceKey(movie)] || {};
+  }
+
+  function saveChoice(movie, choice) {
+    var all = readJson(STORAGE.choices);
+    all[choiceKey(movie)] = choice;
+    writeJson(STORAGE.choices, all);
+  }
+
+  function beginPlayerScope() {
+    if (playerRestoreTimer) {
+      clearTimeout(playerRestoreTimer);
+      playerRestoreTimer = null;
+    }
+
+    if (!playerScopeActive) {
+      try { oldTimecode = Lampa.Storage.get('player_timecode', 'continue'); } catch (e) {}
+      try { oldPlaylistNext = Lampa.Storage.get('playlist_next', true); } catch (e) {}
+    }
+
+    playerScopeActive = true;
+
+    try {
+      Lampa.Storage.set('player_timecode', setting(STORAGE.resumeMode, 'continue'));
+    } catch (e) {}
+
+    try {
+      Lampa.Storage.set('playlist_next', boolValue(STORAGE.autoNext, true));
+    } catch (e) {}
+
+    if (setting(STORAGE.playerMode, 'lampa') === 'lampa') {
+      try { Lampa.Player.runas('lampa'); } catch (e) {}
+    }
+  }
+
+  function schedulePlayerRestore() {
+    if (!playerScopeActive) return;
+    if (playerRestoreTimer) clearTimeout(playerRestoreTimer);
+
+    playerRestoreTimer = setTimeout(function () {
+      try {
+        if (oldTimecode !== null && typeof oldTimecode !== 'undefined') {
+          Lampa.Storage.set('player_timecode', oldTimecode);
         }
       } catch (e) {}
 
       try {
-        if (active.onProgress) active.onProgress(data);
+        if (oldPlaylistNext !== null && typeof oldPlaylistNext !== 'undefined') {
+          Lampa.Storage.set('playlist_next', oldPlaylistNext);
+        }
       } catch (e) {}
+
+      playerScopeActive = false;
+      oldTimecode = null;
+      oldPlaylistNext = null;
+      playerRestoreTimer = null;
+    }, 1000);
+  }
+
+  function addPlayerListeners() {
+    if (window.hdrezka_denys_player_listeners) return;
+    window.hdrezka_denys_player_listeners = true;
+
+    try {
+      if (Lampa.Player && Lampa.Player.listener) {
+        Lampa.Player.listener.follow('destroy', function () {
+          schedulePlayerRestore();
+        });
+
+        Lampa.Player.listener.follow('start', function () {
+          if (playerRestoreTimer) {
+            clearTimeout(playerRestoreTimer);
+            playerRestoreTimer = null;
+          }
+        });
+      }
+    } catch (e) {}
+  }
+
+  function component(object) {
+    var scroll = new Lampa.Scroll({ mask: true, over: true });
+    var files = new Lampa.Explorer(object);
+    var filter = new Lampa.Filter(object);
+    var last = null;
+    var details = null;
+    var choice = { voice: 0, season: 0 };
+    var selectedLink = '';
+    var self = this;
+
+    var brand = $(
+      '<div class="hdrezka-denys-brand">' +
+        '<div class="hdrezka-denys-brand__logo">HDREZKA Premium</div>' +
+        '<div class="hdrezka-denys-brand__edition">by DENYS · v' + VERSION + '</div>' +
+        '<div class="hdrezka-denys-brand__status">' +
+          (accountConnected() ? '● Premium подключён' : '○ Требуется вход') +
+        '</div>' +
+      '</div>'
+    );
+
+    scroll.body().addClass('torrent-list');
+    scroll.minus(files.render().find('.explorer__files-head'));
+
+    function currentVoice() {
+      if (!details || !details.voice || !details.voice.length) return null;
+      if (!details.voice[choice.voice]) choice.voice = 0;
+      return details.voice[choice.voice];
     }
 
-    function applyResume() {
-      if (!active || resumeApplied) return;
-      if (setting(STORAGE.resumeMode, '1') !== '1') return;
+    function currentSeason() {
+      if (!details || !details.season || !details.season.length) return null;
+      if (!details.season[choice.season]) choice.season = 0;
+      return details.season[choice.season];
+    }
 
-      var v = video || getVideo();
-      if (!v) return;
+    function restoreChoice() {
+      var saved = loadChoice(object.movie || {});
 
-      var saved = getSaved(active.key);
-      var time = Number(saved.time || active.resumeTime || 0);
-      var percent = Number(saved.percent || 0);
+      if (boolValue(STORAGE.rememberVoice, true) && saved.voice_name && details.voice) {
+        details.voice.forEach(function (voice, index) {
+          if (voice.name === saved.voice_name) choice.voice = index;
+        });
+      }
 
-      if (!(time > 8) || percent >= threshold()) {
-        resumeApplied = true;
+      if (boolValue(STORAGE.rememberSeason, true) && saved.season_id && details.season) {
+        details.season.forEach(function (season, index) {
+          if (String(season.id) === String(saved.season_id)) choice.season = index;
+        });
+      }
+    }
+
+    function persistChoice(extra) {
+      var voice = currentVoice();
+      var season = currentSeason();
+      var saved = {
+        voice_name: voice ? voice.name : '',
+        season_id: season ? season.id : ''
+      };
+
+      if (extra) {
+        for (var key in extra) saved[key] = extra[key];
+      }
+
+      saveChoice(object.movie || {}, saved);
+    }
+
+    function renderFilter() {
+      if (!details) return;
+
+      var select = [
+        {
+          title: 'Сбросить',
+          reset: true
+        }
+      ];
+
+      function add(type, title, rows, selected) {
+        if (!rows || !rows.length) return;
+
+        var items = rows.map(function (row, index) {
+          return {
+            title: row.name || String(index + 1),
+            selected: index === selected,
+            index: index
+          };
+        });
+
+        select.push({
+          title: title,
+          subtitle: items[selected] ? items[selected].title : '',
+          items: items,
+          stype: type
+        });
+      }
+
+      add('voice', 'Озвучка', details.voice, choice.voice);
+      if (details.is_series) add('season', 'Сезон', details.season, choice.season);
+
+      filter.set('filter', select);
+
+      var chosen = [];
+      var voice = currentVoice();
+      var season = currentSeason();
+
+      if (voice) chosen.push('Озвучка: ' + voice.name);
+      if (details.is_series && season) chosen.push('Сезон: ' + season.name);
+
+      try { filter.chosen('filter', chosen); } catch (e) {}
+    }
+
+    function allEpisodeElements() {
+      if (!details || !details.is_series) return [];
+
+      return (details.episode || []).slice().sort(function (a, b) {
+        var sa = parseInt(a.season_id, 10) || 0;
+        var sb = parseInt(b.season_id, 10) || 0;
+        if (sa !== sb) return sa - sb;
+        return (parseInt(a.episode_id, 10) || 0) - (parseInt(b.episode_id, 10) || 0);
+      });
+    }
+
+    function episodeTitle(media) {
+      var season = media && media.season_id ? media.season_id : '';
+      var episode = media && media.episode_id ? media.episode_id : '';
+      var name = media && media.name ? media.name : ('Серия ' + episode);
+      return season && episode
+        ? 'S' + season + 'E' + episode + ' • ' + name
+        : name;
+    }
+
+    function createPlayerCell(media, voice, resolved) {
+      var view = timelineView(object.movie || {}, details.is_series ? media : null);
+
+      var cell = {
+        title: details.is_series ? episodeTitle(media) : movieTitle(object.movie || {}),
+        timeline: view
+      };
+
+      if (resolved) {
+        cell.url = pickQuality(resolved.quality, resolved.url);
+        cell.quality = renameQualityMap(resolved.quality);
+        cell.subtitles = resolved.subtitles || [];
+      }
+
+      return cell;
+    }
+
+    function buildPlaylist(selectedMedia, voice, selectedStream) {
+      var playlist = [];
+      var first = null;
+      var rows = details.is_series ? allEpisodeElements() : [voice];
+
+      rows.forEach(function (media) {
+        var same = details.is_series
+          ? String(media.season_id) === String(selectedMedia.season_id) &&
+            String(media.episode_id) === String(selectedMedia.episode_id)
+          : true;
+
+        var cell = createPlayerCell(media, voice, same ? selectedStream : null);
+
+        if (!same && details.is_series) {
+          cell.url = function (call) {
+            fetchStream(details, media)
+              .then(function (stream) {
+                cell.url = pickQuality(stream.quality, stream.url);
+                cell.quality = renameQualityMap(stream.quality);
+                cell.subtitles = stream.subtitles || [];
+                call();
+              })
+              .catch(function (error) {
+                cell.url = '';
+                notice('HDREZKA: ' + error.message);
+                call();
+              });
+          };
+        }
+
+        if (same) first = cell;
+        playlist.push(cell);
+      });
+
+      if (!first) first = playlist[0];
+      return { first: first, playlist: playlist };
+    }
+
+    function launch(media, voice) {
+      if (!voice) {
+        notice('HDREZKA: озвучка не найдена');
         return;
       }
 
+      persistChoice(details.is_series ? {
+        season_id: media.season_id,
+        episode_id: media.episode_id
+      } : null);
+
       try {
-        var duration = Number(v.duration || saved.duration || 0);
-        if (duration > 0 && time >= duration - 10) {
-          resumeApplied = true;
+        if (object.movie && object.movie.id && Lampa.Favorite && Lampa.Favorite.add) {
+          Lampa.Favorite.add('history', object.movie, 100);
+        }
+      } catch (e) {}
+
+      notice('HDREZKA: получаем Premium-поток…');
+
+      fetchStream(details, media)
+        .then(function (stream) {
+          beginPlayerScope();
+
+          var built = buildPlaylist(media, voice, stream);
+          var first = built.first;
+          var playlist = built.playlist;
+
+          if (!first || !first.url) throw new Error('Поток не найден');
+
+          if (playlist.length > 1) first.playlist = playlist;
+
+          Lampa.Player.play(first);
+          Lampa.Player.playlist(playlist);
+        })
+        .catch(function (error) {
+          notice('HDREZKA: ' + error.message);
+        });
+    }
+
+    function renderItems() {
+      self.reset();
+
+      if (!details) {
+        self.empty('HDREZKA: нет данных');
+        return;
+      }
+
+      var voice = currentVoice();
+      var season = currentSeason();
+      var items = [];
+
+      if (details.is_series) {
+        if (!season) {
+          self.empty('HDREZKA: сезоны не найдены');
           return;
         }
 
-        /*
-          currentTime ставим сами. Это работает даже на сборках Lampa,
-          где поле player.position не применяется.
-        */
-        v.currentTime = time;
-        resumeApplied = true;
-        notice('▶ Продолжаем с ' + Lampa.Utils.secondsToTime(time, true));
-      } catch (e) {}
-    }
-
-    function detach() {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
+        items = (details.episode || []).filter(function (episode) {
+          return String(episode.season_id) === String(season.id);
+        });
+      } else {
+        items = [voice];
       }
 
-      if (saveTimer) {
-        clearInterval(saveTimer);
-        saveTimer = null;
-      }
-
-      if (video && handlers) {
-        try { video.removeEventListener('loadedmetadata', handlers.loaded); } catch (e) {}
-        try { video.removeEventListener('canplay', handlers.canplay); } catch (e) {}
-        try { video.removeEventListener('timeupdate', handlers.timeupdate); } catch (e) {}
-        try { video.removeEventListener('pause', handlers.pause); } catch (e) {}
-        try { video.removeEventListener('seeking', handlers.seeking); } catch (e) {}
-        try { video.removeEventListener('ended', handlers.ended); } catch (e) {}
-      }
-
-      video = null;
-      handlers = null;
-      bindAttempts = 0;
-      resumeApplied = false;
-    }
-
-    function bindVideo() {
-      if (!active) return false;
-
-      var v = getVideo();
-      if (!v) return false;
-
-      if (video === v && handlers) {
-        applyResume();
-        return true;
-      }
-
-      if (video && handlers) {
-        try { persist(); } catch (e) {}
-      }
-
-      video = v;
-      resumeApplied = false;
-
-      var lastTimeUpdate = 0;
-
-      handlers = {
-        loaded: function () {
-          setTimeout(applyResume, 100);
-          setTimeout(applyResume, 500);
-        },
-        canplay: function () {
-          setTimeout(applyResume, 100);
-        },
-        timeupdate: function () {
-          var now = Date.now();
-          if (now - lastTimeUpdate > 1800) {
-            lastTimeUpdate = now;
-            persist();
-          }
-        },
-        pause: function () {
-          persist();
-        },
-        seeking: function () {
-          setTimeout(function () { persist(); }, 250);
-        },
-        ended: function () {
-          persist(100);
-          var callback = active && active.onEnded;
-          setTimeout(function () {
-            try { if (callback) callback(); } catch (e) {}
-          }, 350);
-        }
-      };
-
-      try { video.addEventListener('loadedmetadata', handlers.loaded); } catch (e) {}
-      try { video.addEventListener('canplay', handlers.canplay); } catch (e) {}
-      try { video.addEventListener('timeupdate', handlers.timeupdate); } catch (e) {}
-      try { video.addEventListener('pause', handlers.pause); } catch (e) {}
-      try { video.addEventListener('seeking', handlers.seeking); } catch (e) {}
-      try { video.addEventListener('ended', handlers.ended); } catch (e) {}
-
-      saveTimer = setInterval(function () {
-        persist();
-      }, 2500);
-
-      setTimeout(applyResume, 250);
-      setTimeout(applyResume, 900);
-      setTimeout(applyResume, 1800);
-
-      return true;
-    }
-
-    function arm(context) {
-      try { persist(); } catch (e) {}
-      detach();
-
-      active = context;
-      bindAttempts = 0;
-
-      /*
-        Player.play может создать <video> не сразу, поэтому ждём до 15 сек.
-      */
-      pollTimer = setInterval(function () {
-        bindAttempts++;
-        if (bindVideo() || bindAttempts > 60) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-        }
-      }, 250);
-
-      setTimeout(bindVideo, 0);
-      setTimeout(bindVideo, 300);
-      setTimeout(bindVideo, 1000);
-    }
-
-    function playerStarted() {
-      if (!active) return;
-      setTimeout(bindVideo, 50);
-      setTimeout(bindVideo, 400);
-      setTimeout(bindVideo, 1200);
-    }
-
-    function playerDestroyed() {
-      try { persist(); } catch (e) {}
-      detach();
-      active = null;
-    }
-
-    return {
-      arm: arm,
-      started: playerStarted,
-      destroyed: playerDestroyed,
-      save: persist,
-      getSaved: getSaved,
-      threshold: threshold
-    };
-  })();
-
-  function addSettings() {
-    if (!Lampa.SettingsApi) return;
-
-    try {
-      Lampa.SettingsApi.addComponent({
-        component:
-          'hdrezka_premium_settings',
-
-        name:
-          'HDREZKA Premium • by DENYS',
-
-        icon:
-          '<svg width="24" height="24" viewBox="0 0 24 24">' +
-          '<rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>' +
-          '<path d="M10 9l5 3-5 3V9z" fill="currentColor"/>' +
-          '</svg>'
-      });
-    } catch (e) {}
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          'hdrezka_pair_account',
-
-        type:
-          'button'
-      },
-
-      field: {
-        name:
-          '🔐 Подключить HDRezka',
-
-        description:
-          'Filmix-style: код на TV → вход с телефона/ПК. Пароль на телевизоре не хранится.'
-      },
-
-      onChange:
-        function () {
-          openAccountMenu();
-        }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.login,
-        type:
-          'input',
-        values:
-          '',
-        default:
-          ''
-      },
-
-      field: {
-        name:
-          'Логин / E-mail HDRezka',
-
-        description:
-          'Резервный способ входа. Рекомендуется кнопка «Подключить HDRezka»'
-      },
-
-      onChange:
-        function () {
-          setValue(
-            STORAGE.session,
-            ''
-          );
-        }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.password,
-        type:
-          'input',
-        values:
-          '',
-        default:
-          ''
-      },
-
-      field: {
-        name:
-          'Пароль HDRezka',
-
-        description:
-          'Резервный способ. При подключении по коду пароль на TV не хранится.'
-      },
-
-      onChange:
-        function () {
-          setValue(
-            STORAGE.session,
-            ''
-          );
-        }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.quality,
-        type:
-          'select',
-        values: {
-          'max': 'Максимальное',
-          '2160': 'До 2160p',
-          '1080': 'До 1080p',
-          '720': 'До 720p',
-          '480': 'До 480p'
-        },
-        default:
-          'max'
-      },
-
-      field: {
-        name:
-          'Качество по умолчанию',
-
-        description:
-          'Плеер всё равно получает весь список качеств'
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.rememberVoice,
-        type:
-          'select',
-        values: {
-          '1': 'Да',
-          '0': 'Нет'
-        },
-        default:
-          '1'
-      },
-
-      field: {
-        name:
-          'Запоминать озвучку',
-
-        description:
-          'Для каждого фильма и сериала отдельно'
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.continueMode,
-        type:
-          'select',
-        values: {
-          '1': 'Да',
-          '0': 'Нет'
-        },
-        default:
-          '1'
-      },
-
-      field: {
-        name:
-          'Продолжать с последнего сезона',
-
-        description:
-          'Помечает последнюю запущенную серию и возвращает к её сезону'
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.playerMode,
-        type:
-          'select',
-        values: {
-          'lampa':
-            'Встроенный Lampa — рекомендуется',
-          'system':
-            'Как в общих настройках Lampa'
-        },
-        default:
-          'lampa'
-      },
-
-      field: {
-        name:
-          'Плеер HDREZKA',
-
-        description:
-          'Встроенный Lampa нужен для нормального таймкода, NEXT/PREV и плейлиста'
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.resumeMode,
-        type:
-          'select',
-        values: {
-          'continue':
-            'Автоматически продолжать',
-          'ask':
-            'Спрашивать: продолжить или сначала',
-          'again':
-            'Всегда с начала'
-        },
-        default:
-          'continue'
-      },
-
-      field: {
-        name:
-          'Таймкод HDREZKA',
-
-        description:
-          'Работает независимо от общей настройки Lampa, пока открыт HDREZKA'
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.autoNext,
-        type:
-          'select',
-        values: {
-          '1':
-            'Да',
-          '0':
-            'Нет'
-        },
-        default:
-          '1'
-      },
-
-      field: {
-        name:
-          'Авто следующая серия',
-
-        description:
-          'После конца серии Lampa сама включает следующую, включая переход между сезонами'
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.prefetchNext,
-        type:
-          'select',
-        values: {
-          '1':
-            'Да',
-          '0':
-            'Нет'
-        },
-        default:
-          '1'
-      },
-
-      field: {
-        name:
-          'Подготавливать следующую серию',
-
-        description:
-          'Заранее получает следующий Premium-поток, чтобы NEXT запускался быстрее'
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.focusContinue,
-        type:
-          'select',
-        values: {
-          '1':
-            'Да',
-          '0':
-            'Нет'
-        },
-        default:
-          '1'
-      },
-
-      field: {
-        name:
-          'Фокус на серии «Продолжить»',
-
-        description:
-          'При входе сразу выделяет последнюю незавершённую серию'
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.watchedAt,
-        type:
-          'select',
-        values: {
-          '85': '85%',
-          '90': '90%',
-          '95': '95%',
-          '98': '98%'
-        },
-        default:
-          '95'
-      },
-
-      field: {
-        name:
-          'Считать просмотренным после',
-
-        description:
-          'После этого процента показывается ✓ Просмотрено'
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          STORAGE.showProgress,
-        type:
-          'select',
-        values: {
-          '1': 'Да',
-          '0': 'Нет'
-        },
-        default:
-          '1'
-      },
-
-      field: {
-        name:
-          'Показывать прогресс',
-
-        description:
-          'Процент, таймкод и полоска прямо в списке серий'
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          'hdrezka_premium_denys_edition',
-        type:
-          'select',
-        values: {
-          'denys':
-            'DENYS EDITION • v' +
-            VERSION
-        },
-        default:
-          'denys'
-      },
-
-      field: {
-        name:
-          'Автор',
-
-        description:
-          'HDREZKA Premium for Lampa • SAME-ORIGIN MSX • by DENYS'
-      }
-    });
-
-    Lampa.SettingsApi.addParam({
-      component:
-        'hdrezka_premium_settings',
-
-      param: {
-        name:
-          'hdrezka_premium_server',
-        type:
-          'input',
-        values:
-          '',
-        default:
-          API
-      },
-
-      field: {
-        name:
-          'Сервер',
-
-        description:
-          'Backend HDREZKA Premium • by DENYS. Менять не нужно.'
-      }
-    });
-  }
-
-  function addStyle() {
-    try {
-      if ($('#hdrezka-denys-style').length) {
+      if (!items.length) {
+        self.empty(details.is_series ? 'HDREZKA: серии не найдены' : 'HDREZKA: видео не найдено');
         return;
       }
 
-      var css =
-        '<style id="hdrezka-denys-style">' +
-        '.hdrezka-denys-brand{' +
-          'display:flex;' +
-          'align-items:center;' +
-          'gap:.7em;' +
-          'padding:.65em 1em;' +
-          'margin:0 0 .65em 0;' +
-          'border:1px solid rgba(255,255,255,.16);' +
-          'border-radius:.65em;' +
-          'background:rgba(0,0,0,.14);' +
-        '}' +
-        '.hdrezka-denys-brand__logo{' +
-          'font-size:1.05em;' +
-          'font-weight:700;' +
-          'letter-spacing:.04em;' +
-        '}' +
-        '.hdrezka-denys-brand__edition{' +
-          'opacity:.72;' +
-          'font-size:.86em;' +
-        '}' +
-        '.hdrezka-denys-brand__status{' +
-          'margin-left:auto;' +
-          'opacity:.78;' +
-          'font-size:.82em;' +
-          'white-space:nowrap;' +
-        '}' +
-        '.view--hdrezka-premium span:after{' +
-          'content:" • DENYS";' +
-          'opacity:.58;' +
-          'font-size:.72em;' +
-        '}' +
-        '.view--hdrezka-account span{' +
-          'font-size:.82em;' +
-          'font-weight:700;' +
-        '}' +
-        '.hdrezka-pair{' +
-          'text-align:center;' +
-          'padding:1.2em .8em;' +
-        '}' +
-        '.hdrezka-pair__title{' +
-          'font-size:1.25em;' +
-          'font-weight:700;' +
-          'margin-bottom:1.1em;' +
-        '}' +
-        '.hdrezka-pair__hint{' +
-          'opacity:.7;' +
-          'margin:.55em 0;' +
-        '}' +
-        '.hdrezka-pair__url{' +
-          'font-size:1.05em;' +
-          'font-weight:600;' +
-          'word-break:break-all;' +
-          'margin:.4em 0 1em;' +
-        '}' +
-        '.hdrezka-pair__code{' +
-          'font-size:2.6em;' +
-          'font-weight:800;' +
-          'letter-spacing:.18em;' +
-          'margin:.2em 0 .65em;' +
-        '}' +
-        '.hdrezka-pair__state{' +
-          'font-size:1em;' +
-          'margin-top:.7em;' +
-        '}' +
-        '.hdrezka-pair__brand{' +
-          'opacity:.5;' +
-          'font-size:.75em;' +
-          'margin-top:1.4em;' +
-        '}' +
-        '</style>';
+      var continueTarget = null;
+      var threshold = watchedThreshold();
 
-      $('head').append(css);
-    } catch (e) {}
+      items.forEach(function (media) {
+        var view = timelineView(object.movie || {}, details.is_series ? media : null);
+        var percent = parseFloat(view.percent || 0) || 0;
+        var time = parseFloat(view.time || 0) || 0;
+        var duration = parseFloat(view.duration || 0) || 0;
+
+        var title = details.is_series ? episodeTitle(media) : 'Смотреть фильм';
+        var info = voice && voice.name ? ' / ' + voice.name : '';
+
+        if (percent > 0 && percent < threshold) {
+          info += ' • ' + Math.round(percent) + '%';
+          try {
+            if (time > 0) info += ' • ' + Lampa.Utils.secondsToTime(time, true);
+          } catch (e) {}
+
+          if (!continueTarget) title = '▶ ' + title;
+        } else if (percent >= threshold) {
+          info += ' • ✓ просмотрено';
+        }
+
+        var element = {
+          title: title,
+          quality: setting(STORAGE.quality, 'max') === 'max'
+            ? 'MAX'
+            : setting(STORAGE.quality, '1080') + 'p',
+          info: info
+        };
+
+        var item = Lampa.Template.get('hdrezka_denys_item', element);
+        media.timeline = view;
+
+        try {
+          item.append(Lampa.Timeline.render(view));
+          if (Lampa.Timeline.details) {
+            item.find('.online__quality').append(Lampa.Timeline.details(view, ' / '));
+          }
+        } catch (e) {}
+
+        if (percent >= threshold) {
+          try {
+            item.append(
+              '<div class="torrent-item__viewed">' +
+              Lampa.Template.get('icon_star', {}, true) +
+              '</div>'
+            );
+          } catch (e) {}
+        }
+
+        item.on('hover:focus', function (e) {
+          last = e.target;
+          scroll.update($(e.target), true);
+        });
+
+        item.on('hover:enter', function () {
+          launch(details.is_series ? media : voice, voice);
+        });
+
+        item.on('hover:long', function () {
+          var enabled = null;
+          try { enabled = Lampa.Controller.enabled().name; } catch (e) {}
+
+          Lampa.Select.show({
+            title: 'HDREZKA • Действие',
+            items: [
+              { title: 'Сбросить таймкод', action: 'reset' },
+              { title: 'Запустить во встроенном Lampa', action: 'lampa' },
+              { title: 'Диагностика маршрута', action: 'diag' }
+            ],
+            onSelect: function (action) {
+              try { Lampa.Select.hide(); } catch (e) {}
+
+              if (action.action === 'reset') {
+                view.percent = 0;
+                view.time = 0;
+                view.duration = 0;
+                try { Lampa.Timeline.update(view); } catch (e) {}
+                renderItems();
+              } else if (action.action === 'lampa') {
+                try { Lampa.Player.runas('lampa'); } catch (e) {}
+                launch(details.is_series ? media : voice, voice);
+              } else if (action.action === 'diag') {
+                showDiagnostics();
+              }
+
+              if (enabled && action.action !== 'diag') {
+                try { Lampa.Controller.toggle(enabled); } catch (e) {}
+              }
+            },
+            onBack: function () {
+              try { Lampa.Select.hide(); } catch (e) {}
+              if (enabled) {
+                try { Lampa.Controller.toggle(enabled); } catch (e) {}
+              }
+            }
+          });
+        });
+
+        if (!continueTarget && percent > 0 && percent < threshold) {
+          continueTarget = item[0];
+        }
+
+        scroll.append(item);
+      });
+
+      self.activity.loader(false);
+
+      if (continueTarget && boolValue(STORAGE.focusContinue, true)) {
+        last = continueTarget;
+        self.start(false);
+        setTimeout(function () {
+          try { scroll.update($(continueTarget), true); } catch (e) {}
+        }, 80);
+      } else {
+        self.start(true);
+      }
+    }
+
+    function finishDetails() {
+      choice = { voice: 0, season: 0 };
+      restoreChoice();
+
+      var voice = currentVoice();
+
+      if (details.is_series && voice) {
+        self.activity.loader(true);
+        fetchEpisodes(details, voice)
+          .then(function () {
+            restoreChoice();
+            renderFilter();
+            renderItems();
+          })
+          .catch(function (error) {
+            self.empty(error.message);
+          });
+      } else {
+        renderFilter();
+        renderItems();
+      }
+    }
+
+    function selectCandidate(rows) {
+      if (!rows || !rows.length) {
+        self.empty('HDREZKA: по этому названию ничего не найдено');
+        return;
+      }
+
+      var best = rows[0];
+      var second = rows[1];
+
+      if (
+        rows.length === 1 ||
+        (
+          best.score >= 96 &&
+          (!second || best.score - second.score >= 8)
+        )
+      ) {
+        selectedLink = best.link;
+        self.activity.loader(true);
+
+        fetchPage(best.link)
+          .then(function (parsed) {
+            details = parsed;
+            finishDetails();
+          })
+          .catch(function (error) {
+            self.empty(error.message);
+          });
+        return;
+      }
+
+      var select = rows.slice(0, 12).map(function (row) {
+        return {
+          title: row.title + (row.year ? ' (' + row.year + ')' : ''),
+          subtitle: row.orig_title || ('Совпадение: ' + row.score),
+          row: row
+        };
+      });
+
+      self.activity.loader(false);
+
+      Lampa.Select.show({
+        title: 'Выберите фильм HDRezka',
+        items: select,
+        onSelect: function (item) {
+          selectedLink = item.row.link;
+          self.activity.loader(true);
+
+          fetchPage(item.row.link)
+            .then(function (parsed) {
+              details = parsed;
+              finishDetails();
+            })
+            .catch(function (error) {
+              self.empty(error.message);
+            });
+        }
+      });
+    }
+
+    function startSearch(manual) {
+      self.activity.loader(true);
+      self.reset();
+
+      resolveMovie(object.movie || {}, manual || object.search || '')
+        .then(selectCandidate)
+        .catch(function (error) {
+          self.empty(error.message);
+        });
+    }
+
+    this.create = function () {
+      currentActivity = this.activity;
+
+      filter.onSearch = function (value) {
+        startSearch(value);
+      };
+
+      filter.onBack = function () {
+        self.start();
+      };
+
+      filter.onSelect = function (type, a, b) {
+        if (type !== 'filter') return;
+
+        if (a.reset) {
+          choice.voice = 0;
+          choice.season = 0;
+          persistChoice();
+          if (details && details.is_series) {
+            self.activity.loader(true);
+            fetchEpisodes(details, currentVoice())
+              .then(function () {
+                renderFilter();
+                renderItems();
+              })
+              .catch(function (error) {
+                self.empty(error.message);
+              });
+          } else {
+            renderFilter();
+            renderItems();
+          }
+          return;
+        }
+
+        if (a.stype === 'voice') {
+          choice.voice = b.index;
+          choice.season = 0;
+          persistChoice();
+
+          if (details && details.is_series) {
+            self.activity.loader(true);
+            fetchEpisodes(details, currentVoice())
+              .then(function () {
+                restoreChoice();
+                renderFilter();
+                renderItems();
+              })
+              .catch(function (error) {
+                self.empty(error.message);
+              });
+          } else {
+            renderFilter();
+            renderItems();
+          }
+          return;
+        }
+
+        if (a.stype === 'season') {
+          choice.season = b.index;
+          persistChoice();
+          renderFilter();
+          renderItems();
+        }
+      };
+
+      files.appendHead(brand);
+      files.appendHead(filter.render());
+      files.appendFiles(scroll.render());
+
+      startSearch('');
+      return this.render();
+    };
+
+    this.reset = function () {
+      scroll.render().find('.empty').remove();
+      scroll.clear();
+      scroll.reset();
+    };
+
+    this.empty = function (message) {
+      var empty = Lampa.Template.get('list_empty');
+      if (message) empty.find('.empty__descr').text(message);
+      scroll.append(empty);
+      self.activity.loader(false);
+      self.start(true);
+    };
+
+    this.start = function (firstSelect) {
+      if (!Lampa.Activity.active() || Lampa.Activity.active().activity !== self.activity) return;
+
+      if (firstSelect) {
+        last = scroll.render().find('.selector').eq(0)[0];
+      }
+
+      try {
+        Lampa.Background.immediately(Lampa.Utils.cardImgBackground(object.movie));
+      } catch (e) {}
+
+      Lampa.Controller.add('content', {
+        toggle: function () {
+          Lampa.Controller.collectionSet(scroll.render(), files.render());
+          Lampa.Controller.collectionFocus(last || false, scroll.render());
+        },
+        up: function () {
+          if (Navigator.canmove('up')) Navigator.move('up');
+          else Lampa.Controller.toggle('head');
+        },
+        down: function () {
+          Navigator.move('down');
+        },
+        right: function () {
+          if (Navigator.canmove('right')) Navigator.move('right');
+          else filter.show('Фильтр', 'filter');
+        },
+        left: function () {
+          if (Navigator.canmove('left')) Navigator.move('left');
+          else Lampa.Controller.toggle('menu');
+        },
+        back: self.back
+      });
+
+      Lampa.Controller.toggle('content');
+    };
+
+    this.render = function () {
+      return files.render();
+    };
+
+    this.back = function () {
+      Lampa.Activity.backward();
+    };
+
+    this.pause = function () {};
+    this.stop = function () {};
+
+    this.destroy = function () {
+      try { files.destroy(); } catch (e) {}
+      try { scroll.destroy(); } catch (e) {}
+      try { if (currentNetwork) currentNetwork.clear(); } catch (e) {}
+    };
   }
 
   function addTemplates() {
     try {
       Lampa.Template.add(
-        'hdrezka_premium_item',
+        'hdrezka_denys_item',
         '<div class="online selector">' +
           '<div class="online__body">' +
             '<div class="online__title">{title}</div>' +
@@ -1969,2584 +2490,356 @@
     } catch (e) {}
   }
 
+  function addStyle() {
+    if ($('#hdrezka-denys-style').length) return;
 
-  /*
-    ============================================================
-    DENYS PLAYER SCOPE v4
-    ============================================================
-    Корень двух прошлых проблем был не в Rezka:
-    1) Lampa могла отдавать HDRezka во внешний/системный плеер.
-       Тогда Lampa.Timeline и Lampa Playlist вообще не управляют видео.
-    2) В v3 мы передавали playlist = [first], то есть следующей серии
-       физически не существовало в плейлисте.
+    var css =
+      '<style id="hdrezka-denys-style">' +
+        '.hdrezka-denys-brand{' +
+          'display:flex;align-items:center;gap:.7em;padding:.65em 1em;margin:0 0 .65em 0;' +
+          'border:1px solid rgba(255,255,255,.16);border-radius:.65em;background:rgba(0,0,0,.14);' +
+        '}' +
+        '.hdrezka-denys-brand__logo{font-size:1.05em;font-weight:700;letter-spacing:.04em;}' +
+        '.hdrezka-denys-brand__edition{opacity:.72;font-size:.86em;}' +
+        '.hdrezka-denys-brand__status{margin-left:auto;opacity:.78;font-size:.82em;white-space:nowrap;}' +
+        '.view--hdrezka-premium span:after{content:" • DENYS";opacity:.58;font-size:.72em;}' +
+        '.view--hdrezka-account span{font-size:.82em;font-weight:700;}' +
+        '.hdrezka-diag{line-height:1.7;font-size:.95em;}' +
+      '</style>';
 
-    v4 по умолчанию запускает именно ВНУТРЕННИЙ плеер Lampa,
-    временно включает native timecode "continue" и playlist_next,
-    а после выхода возвращает пользовательские настройки обратно.
-  */
-  var DenysPlayerScope = (function () {
-    var active = false;
-    var originalTimecode = null;
-    var originalPlaylistNext = null;
-    var restoreTimer = null;
+    $('head').append(css);
+  }
 
-    function resumePolicy() {
-      var raw = setting(
-        STORAGE.resumeMode,
-        'continue'
-      );
+  function addSettings() {
+    if (!Lampa.SettingsApi) return;
 
-      /* миграция старых значений v2/v3 */
-      if (raw === '1') return 'continue';
-      if (raw === '0') return 'again';
-
-      if (
-        raw !== 'continue' &&
-        raw !== 'ask' &&
-        raw !== 'again'
-      ) {
-        return 'continue';
-      }
-
-      return raw;
-    }
-
-    function useInternalPlayer() {
-      return setting(
-        STORAGE.playerMode,
-        'lampa'
-      ) !== 'system';
-    }
-
-    function begin() {
-      if (restoreTimer) {
-        clearTimeout(restoreTimer);
-        restoreTimer = null;
-      }
-
-      if (!active) {
-        try {
-          originalTimecode =
-            Lampa.Storage.get(
-              'player_timecode',
-              'continue'
-            );
-        } catch (e) {
-          originalTimecode =
-            'continue';
-        }
-
-        try {
-          originalPlaylistNext =
-            Lampa.Storage.get(
-              'playlist_next',
-              true
-            );
-        } catch (e) {
-          originalPlaylistNext =
-            true;
-        }
-      }
-
-      active = true;
-
-      if (useInternalPlayer()) {
-        try {
-          Lampa.Storage.set(
-            'player_timecode',
-            resumePolicy()
-          );
-        } catch (e) {}
-
-        if (
-          setting(
-            STORAGE.autoNext,
-            '1'
-          ) === '1'
-        ) {
-          try {
-            Lampa.Storage.set(
-              'playlist_next',
-              true
-            );
-          } catch (e) {}
-        }
-      }
-    }
-
-    function decorate(item) {
-      item =
-        item ||
-        {};
-
-      item.hdrezka_denys =
-        true;
-
-      /*
-        Ключевой фикс.
-        'lampa' принудительно запускает внутренний player.js,
-        где реально работают Timeline и Playlist.
-      */
-      if (useInternalPlayer()) {
-        item.launch_player =
-          'lampa';
-      }
-
-      return item;
-    }
-
-    function onStart(data) {
-      if (
-        data &&
-        data.hdrezka_denys
-      ) {
-        begin();
-      }
-    }
-
-    function restore() {
-      if (!active) return;
-
-      try {
-        if (
-          originalTimecode !== null
-        ) {
-          Lampa.Storage.set(
-            'player_timecode',
-            originalTimecode
-          );
-        }
-      } catch (e) {}
-
-      try {
-        if (
-          originalPlaylistNext !== null
-        ) {
-          Lampa.Storage.set(
-            'playlist_next',
-            originalPlaylistNext
-          );
-        }
-      } catch (e) {}
-
-      active = false;
-      originalTimecode = null;
-      originalPlaylistNext = null;
-      restoreTimer = null;
-    }
-
-    function onDestroy() {
-      if (!active) return;
-
-      /*
-        При NEXT внутри Lampa:
-        destroy текущей серии -> сразу start следующей.
-        Поэтому не восстанавливаем настройки мгновенно.
-      */
-      if (restoreTimer) {
-        clearTimeout(
-          restoreTimer
-        );
-      }
-
-      restoreTimer =
-        setTimeout(
-          restore,
-          900
-        );
-    }
-
-    return {
-      begin: begin,
-      decorate: decorate,
-      onStart: onStart,
-      onDestroy: onDestroy,
-      resumePolicy: resumePolicy,
-      internal: useInternalPlayer
-    };
-  })();
-
-  function component(object) {
-    var scroll =
-      new Lampa.Scroll({
-        mask: true,
-        over: true
+    try {
+      Lampa.SettingsApi.addComponent({
+        component: SETTINGS,
+        name: 'HDREZKA Premium • by DENYS',
+        icon:
+          '<svg width="24" height="24" viewBox="0 0 24 24">' +
+          '<rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>' +
+          '<path d="M10 9l5 3-5 3V9z" fill="currentColor"/>' +
+          '</svg>'
       });
+    } catch (e) {}
 
-    var files =
-      new Lampa.Explorer(object);
+    function param(name, type, values, def, title, description, onChange) {
+      var data = {
+        component: SETTINGS,
+        param: {
+          name: name,
+          type: type,
+          default: def
+        },
+        field: {
+          name: title,
+          description: description || ''
+        }
+      };
 
-    var filter =
-      new Lampa.Filter(object);
+      if (typeof values !== 'undefined') data.param.values = values;
+      if (onChange) data.onChange = onChange;
 
-    var brand =
-      $(
-        '<div class="hdrezka-denys-brand">' +
-          '<div class="hdrezka-denys-brand__logo">HDREZKA Premium</div>' +
-          '<div class="hdrezka-denys-brand__edition">by DENYS · v' +
-          VERSION +
-          '</div>' +
-          '<div class="hdrezka-denys-brand__status">' +
-          (
-            value(STORAGE.session)
-              ? '● Аккаунт подключён'
-              : '○ Вход при первом запуске'
-          ) +
-          '</div>' +
-        '</div>'
-      );
+      try { Lampa.SettingsApi.addParam(data); } catch (e) {}
+    }
 
-    var details = null;
-    var last = null;
-
-    var choice = {
-      voice: 0,
-      season: 0
-    };
-
-    scroll
-      .body()
-      .addClass('torrent-list');
-
-    scroll.minus(
-      files
-        .render()
-        .find(
-          '.explorer__files-head'
-        )
+    param(
+      'hdrezka_denys_account',
+      'button',
+      undefined,
+      '',
+      '🔐 Подключить / проверить HDRezka',
+      'Вход, импорт сессии Online Mod, проверка и выход.',
+      openAccountMenu
     );
 
-    function currentVoice() {
-      if (
-        !details ||
-        !details.voices ||
-        !details.voices.length
-      ) {
-        return null;
-      }
-
-      if (
-        !details.voices[
-          choice.voice
-        ]
-      ) {
-        choice.voice = 0;
-      }
-
-      return details.voices[
-        choice.voice
-      ];
-    }
-
-    function currentSeason() {
-      if (
-        !details ||
-        !details.seasons ||
-        !details.seasons.length
-      ) {
-        return null;
-      }
-
-      if (
-        !details.seasons[
-          choice.season
-        ]
-      ) {
-        choice.season = 0;
-      }
-
-      return details.seasons[
-        choice.season
-      ];
-    }
-
-    function preferenceKey() {
-      if (
-        details &&
-        details.url
-      ) {
-        return details.url;
-      }
-
-      var movie =
-        object.movie || {};
-
-      return (
-        movieTitle(movie) +
-        '|' +
-        (
-          yearFromMovie(movie) ||
-          ''
-        )
-      );
-    }
-
-
-    function timelineBaseTitle() {
-      var movie =
-        object.movie ||
-        {};
-
-      return (
-        movie.original_name ||
-        movie.original_title ||
-        movie.name ||
-        movie.title ||
-        (
-          details &&
-          details.name
-        ) ||
-        'HDREZKA'
-      );
-    }
-
-    /*
-      Используем ТОТ ЖЕ hash, что официальный Lampa и лучшие
-      online-плагины. Благодаря этому:
-      - native resume;
-      - полоска прогресса;
-      - синхронизация Timeline аккаунта Lampa;
-      - watched status;
-      - совместимость с другими online-источниками.
-    */
-    function timelineHash(episode) {
-      var title =
-        timelineBaseTitle();
-
-      if (
-        details &&
-        details.is_series &&
-        episode
-      ) {
-        var season =
-          parseInt(
-            episode.season_id,
-            10
-          ) || 1;
-
-        var ep =
-          parseInt(
-            episode.episode_id,
-            10
-          ) || 1;
-
-        return Lampa.Utils.hash(
-          [
-            season,
-            season > 10
-              ? ':'
-              : '',
-            ep,
-            title
-          ].join('')
-        );
-      }
-
-      return Lampa.Utils.hash(
-        title
-      );
-    }
-
-    function timelineView(episode) {
-      try {
-        return Lampa.Timeline.view(
-          timelineHash(
-            episode
-          )
-        );
-      }
-      catch (e) {
-        return {
-          hash:
-            timelineHash(
-              episode
-            ),
-          percent:
-            0,
-          time:
-            0,
-          duration:
-            0
-        };
-      }
-    }
-
-    function timelineRoad(
-      view
-    ) {
-      return {
-        percent:
-          parseFloat(
-            view &&
-            view.percent ||
-            0
-          ) || 0,
-
-        time:
-          parseFloat(
-            view &&
-            view.time ||
-            0
-          ) || 0,
-
-        duration:
-          parseFloat(
-            view &&
-            view.duration ||
-            0
-          ) || 0
-      };
-    }
-
-    function nextEpisodeAfter(episode) {
-      if (
-        !details ||
-        !details.is_series ||
-        !episode ||
-        !details.episodes
-      ) {
-        return null;
-      }
-
-      var ordered =
-        details.episodes
-          .slice()
-          .sort(
-            function (a, b) {
-              var sa =
-                parseInt(
-                  a.season_id,
-                  10
-                ) || 0;
-
-              var sb =
-                parseInt(
-                  b.season_id,
-                  10
-                ) || 0;
-
-              if (sa !== sb) {
-                return sa - sb;
-              }
-
-              return (
-                (
-                  parseInt(
-                    a.episode_id,
-                    10
-                  ) || 0
-                ) -
-                (
-                  parseInt(
-                    b.episode_id,
-                    10
-                  ) || 0
-                )
-              );
-            }
-          );
-
-      for (
-        var i = 0;
-        i < ordered.length;
-        i++
-      ) {
-        if (
-          String(
-            ordered[i].season_id
-          ) ===
-          String(
-            episode.season_id
-          ) &&
-          String(
-            ordered[i].episode_id
-          ) ===
-          String(
-            episode.episode_id
-          )
-        ) {
-          return (
-            ordered[i + 1] ||
-            null
-          );
-        }
-      }
-
-      return null;
-    }
-
-    function saveTimelineProgress(
-      episode,
-      road
-    ) {
-      if (!details) return;
-
-      savePreference();
-
-      var key =
-        preferenceKey();
-
-      var all =
-        readJson(
-          STORAGE.progress
-        );
-
-      var current =
-        all[key] ||
-        {};
-
-      var voice =
-        currentVoice();
-
-      var season =
-        currentSeason();
-
-      var percent =
-        parseFloat(
-          road &&
-          road.percent ||
-          0
-        ) || 0;
-
-      var time =
-        parseFloat(
-          road &&
-          road.time ||
-          0
-        ) || 0;
-
-      var duration =
-        parseFloat(
-          road &&
-          road.duration ||
-          0
-        ) || 0;
-
-      current.voice =
-        voice
-          ? voice.name
-          : (
-              current.voice ||
-              ''
-            );
-
-      current.time =
-        time;
-
-      current.duration =
-        duration;
-
-      current.percent =
-        percent;
-
-      current.updated =
-        Date.now();
-
-      if (
-        details.is_series &&
-        episode
-      ) {
-        current.season =
-          episode.season_id ||
-          (
-            season
-              ? season.id
-              : null
-          );
-
-        current.episode =
-          episode.episode_id;
-
-        /*
-          Если серия реально досмотрена,
-          "Продолжить" переносим на следующую.
-          Таймлайн текущей серии при этом остаётся
-          в нативном Lampa.Timeline и показывает 100%.
-        */
-        if (percent >= DenysPlayback.threshold()) {
-          var next =
-            nextEpisodeAfter(
-              episode
-            );
-
-          if (next) {
-            current.season =
-              next.season_id;
-
-            current.episode =
-              next.episode_id;
-
-            current.time =
-              0;
-
-            current.duration =
-              0;
-
-            current.percent =
-              0;
-          }
-        }
-      }
-
-      all[key] =
-        current;
-
-      writeJson(
-        STORAGE.progress,
-        all
-      );
-    }
-
-    function wrapTimeline(
-      view,
-      episode
-    ) {
-      if (!view) return view;
-
-      if (
-        view._hdrezka_denys_wrapped
-      ) {
-        return view;
-      }
-
-      var original =
-        view.handler;
-
-      var lastSave =
-        0;
-
-      view.handler =
-        function (
-          percent,
-          time,
-          duration
-        ) {
-          if (original) {
-            try {
-              original(
-                percent,
-                time,
-                duration
-              );
-            }
-            catch (e) {}
-          }
-
-          var now =
-            Date.now();
-
-          if (
-            now - lastSave >
-              1000 ||
-            percent >= DenysPlayback.threshold()
-          ) {
-            lastSave =
-              now;
-
-            saveTimelineProgress(
-              episode,
-              {
-                percent:
-                  percent,
-
-                time:
-                  time,
-
-                duration:
-                  duration
-              }
-            );
-          }
-        };
-
-      view._hdrezka_denys_wrapped =
-        true;
-
-      return view;
-    }
-
-    function findVoiceIndex(name) {
-      if (
-        !name ||
-        !details ||
-        !details.voices
-      ) {
-        return -1;
-      }
-
-      for (
-        var i = 0;
-        i < details.voices.length;
-        i++
-      ) {
-        if (
-          details.voices[i] &&
-          details.voices[i].name === name
-        ) {
-          return i;
-        }
-      }
-
-      return -1;
-    }
-
-    function findSeasonIndex(id) {
-      if (
-        id === null ||
-        typeof id === 'undefined' ||
-        !details ||
-        !details.seasons
-      ) {
-        return -1;
-      }
-
-      for (
-        var i = 0;
-        i < details.seasons.length;
-        i++
-      ) {
-        if (
-          String(
-            details.seasons[i].id
-          ) ===
-          String(id)
-        ) {
-          return i;
-        }
-      }
-
-      return -1;
-    }
-
-    function savedState() {
-      var key =
-        preferenceKey();
-
-      var preferences =
-        readJson(
-          STORAGE.preferences
-        );
-
-      var progress =
-        readJson(
-          STORAGE.progress
-        );
-
-      return {
-        pref:
-          preferences[key] ||
-          {},
-        progress:
-          progress[key] ||
-          {}
-      };
-    }
-
-    function savePreference() {
-      if (!details) return;
-
-      var key =
-        preferenceKey();
-
-      var preferences =
-        readJson(
-          STORAGE.preferences
-        );
-
-      var current =
-        preferences[key] ||
-        {};
-
-      var voice =
-        currentVoice();
-
-      var season =
-        currentSeason();
-
-      if (
-        setting(
-          STORAGE.rememberVoice,
-          '1'
-        ) === '1' &&
-        voice
-      ) {
-        current.voice =
-          voice.name;
-      }
-
-      if (season) {
-        current.season =
-          season.id;
-      }
-
-      current.updated =
-        Date.now();
-
-      preferences[key] =
-        current;
-
-      writeJson(
-        STORAGE.preferences,
-        preferences
-      );
-    }
-
-    function saveProgress(episode) {
-      if (!details) return;
-
-      savePreference();
-
-      var key =
-        preferenceKey();
-
-      var progress =
-        readJson(
-          STORAGE.progress
-        );
-
-      var current =
-        progress[key] ||
-        {};
-
-      var voice =
-        currentVoice();
-
-      var season =
-        currentSeason();
-
-      current.voice =
-        voice
-          ? voice.name
-          : (
-              current.voice ||
-              ''
-            );
-
-      current.updated =
-        Date.now();
-
-      if (
-        details.is_series &&
-        episode
-      ) {
-        current.season =
-          episode.season_id ||
-          (
-            season
-              ? season.id
-              : null
-          );
-
-        current.episode =
-          episode.episode_id;
-      }
-
-      /*
-        Не сбрасываем time/duration/percent при повторном
-        открытии той же серии/фильма — это и есть resume.
-      */
-
-      progress[key] =
-        current;
-
-      writeJson(
-        STORAGE.progress,
-        progress
-      );
-    }
-
-    function restoreChoice() {
-      if (!details) {
-        return null;
-      }
-
-      var state =
-        savedState();
-
-      var wantedSeason =
-        null;
-
-      if (
-        setting(
-          STORAGE.rememberVoice,
-          '1'
-        ) === '1'
-      ) {
-        var voiceName =
-          (
-            state.progress &&
-            state.progress.voice
-          ) ||
-          (
-            state.pref &&
-            state.pref.voice
-          );
-
-        var voiceIndex =
-          findVoiceIndex(
-            voiceName
-          );
-
-        if (
-          voiceIndex >= 0
-        ) {
-          choice.voice =
-            voiceIndex;
-        }
-      }
-
-      if (
-        setting(
-          STORAGE.continueMode,
-          '1'
-        ) === '1'
-      ) {
-        wantedSeason =
-          (
-            state.progress &&
-            state.progress.season
-          );
-      }
-
-      if (
-        wantedSeason === null ||
-        typeof wantedSeason ===
-          'undefined'
-      ) {
-        wantedSeason =
-          (
-            state.pref &&
-            state.pref.season
-          );
-      }
-
-      return wantedSeason;
-    }
-
-    function applySeason(id) {
-      var index =
-        findSeasonIndex(id);
-
-      if (
-        index >= 0
-      ) {
-        choice.season =
-          index;
-      }
-    }
-
-    function finishDetails(self) {
-      var wantedSeason =
-        restoreChoice();
-
-      var voice =
-        currentVoice();
-
-      if (
-        details &&
-        details.is_series &&
-        voice &&
-        String(voice.id) !==
-          String(
-            details.default_voice_id
-          )
-      ) {
-        self.loadEpisodes(
-          voice,
-          wantedSeason
-        );
-        return;
-      }
-
-      applySeason(
-        wantedSeason
-      );
-
-      self.renderFilter();
-      self.renderItems();
-    }
-
-    function loadDetails(url) {
-      var self = this;
-
-      self.activity.loader(true);
-
-      return api(
-        '/api/details',
-        {
-          url: url
-        }
-      ).then(function (data) {
-        if (
-          !data ||
-          !data.details
-        ) {
-          throw new Error(
-            'HDREZKA: пустой ответ'
-          );
-        }
-
-        details = data.details;
-        choice.voice = 0;
-        choice.season = 0;
-
-        finishDetails(
-          self
-        );
-      });
-    }
-
-    function resolveMovie() {
-      var self = this;
-      var movie = object.movie || {};
-
-      self.activity.loader(true);
-      self.reset();
-
-      return api(
-        '/api/resolve',
-        {
-          title:
-            movieTitle(movie),
-
-          original_title:
-            originalTitle(movie),
-
-          year:
-            yearFromMovie(movie)
-        }
-      ).then(function (data) {
-        if (
-          data &&
-          data.select &&
-          data.results &&
-          data.results.length
-        ) {
-          var rows =
-            data.results.map(
-              function (row) {
-                return {
-                  title:
-                    row.name +
-                    (
-                      row.year
-                        ? (
-                            ' (' +
-                            row.year +
-                            ')'
-                          )
-                        : ''
-                    ),
-
-                  subtitle:
-                    [
-                      row.country,
-                      row.genre
-                    ]
-                      .filter(Boolean)
-                      .join(' · '),
-
-                  data:
-                    row
-                };
-              }
-            );
-
-          Lampa.Select.show({
-            title:
-              'Выберите фильм HDREZKA',
-
-            items:
-              rows,
-
-            onSelect:
-              function (row) {
-                loadDetails
-                  .call(
-                    self,
-                    row.data.url
-                  )
-                  .catch(
-                    function (error) {
-                      self.empty(
-                        error.message
-                      );
-                    }
-                  );
-              }
-          });
-
-          self.activity.loader(false);
-          return;
-        }
-
-        if (
-          !data ||
-          !data.details
-        ) {
-          throw new Error(
-            'HDREZKA: фильм не найден'
-          );
-        }
-
-        details = data.details;
-        choice.voice = 0;
-        choice.season = 0;
-
-        finishDetails(
-          self
-        );
-      });
-    }
-
-    this.create = function () {
-      var self = this;
-
-      this.activity.loader(true);
-
-      filter.onSearch =
-        function (value) {
-          Lampa.Activity.replace({
-            search:
-              value,
-            search_date:
-              '',
-            clarification:
-              true
-          });
-        };
-
-      filter.onBack =
-        function () {
-          self.start();
-        };
-
-      filter.onSelect =
-        function (
-          type,
-          a,
-          b
-        ) {
-          if (
-            type !==
-            'filter'
-          ) {
-            return;
-          }
-
-          if (a.reset) {
-            choice.voice = 0;
-            choice.season = 0;
-
-            savePreference();
-
-            if (
-              details &&
-              details.is_series
-            ) {
-              self.loadEpisodes(
-                currentVoice()
-              );
-            }
-            else {
-              self.renderFilter();
-              self.renderItems();
-            }
-
-            return;
-          }
-
-          if (
-            a.stype ===
-            'balancer'
-          ) {
-            return;
-          }
-
-          if (
-            a.stype ===
-            'voice'
-          ) {
-            choice.voice =
-              b.index;
-
-            choice.season = 0;
-
-            if (
-              details &&
-              details.is_series
-            ) {
-              self.loadEpisodes(
-                currentVoice()
-              );
-            }
-            else {
-              self.renderFilter();
-              self.renderItems();
-            }
-
-            return;
-          }
-
-          if (
-            a.stype ===
-            'season'
-          ) {
-            choice.season =
-              b.index;
-
-            savePreference();
-
-            self.renderFilter();
-            self.renderItems();
-          }
-        };
-
-      try {
-        filter
-          .render()
-          .find(
-            '.filter--sort'
-          )
-          .hide();
-      } catch (e) {}
-
-      files.appendHead(
-        brand
-      );
-
-      files.appendHead(
-        filter.render()
-      );
-
-      files.appendFiles(
-        scroll.render()
-      );
-
-      resolveMovie
-        .call(this)
-        .catch(
-          function (error) {
-            self.empty(
-              error.message ||
-              'Ошибка HDREZKA'
-            );
-          }
-        );
-
-      return this.render();
-    };
-
-    this.loadEpisodes =
-      function (
-        voice,
-        wantedSeason
-      ) {
-        var self = this;
-
-        if (
-          !details ||
-          !voice
-        ) {
-          this.empty(
-            'HDREZKA: озвучка не найдена'
-          );
-          return;
-        }
-
-        this.activity.loader(true);
-
-        api(
-          '/api/episodes',
-          {
-            url:
-              details.url,
-
-            translator_id:
-              voice.id
-          }
-        ).then(function (data) {
-          details.seasons =
-            data.seasons || [];
-
-          details.episodes =
-            data.episodes || [];
-
-          choice.season = 0;
-
-          applySeason(
-            wantedSeason
-          );
-
-          savePreference();
-
-          self.renderFilter();
-          self.renderItems();
-        }).catch(function (error) {
-          self.empty(
-            error.message
-          );
-        });
-      };
-
-    this.renderFilter =
+    param(
+      STORAGE.login,
+      'input',
+      '',
+      '',
+      'Логин / E-mail HDRezka',
+      'Нужен только для входа. Можно импортировать готовую сессию Online Mod.'
+    );
+
+    param(
+      STORAGE.password,
+      'input',
+      '',
+      '',
+      'Пароль HDRezka',
+      'После успешного входа пароль автоматически очищается.'
+    );
+
+    param(
+      STORAGE.cookie,
+      'input',
+      '',
+      '',
+      'Cookie HDRezka • расширенно',
+      'Можно вставить вручную. Если поле заполнено, плагин использует эту cookie.'
+    );
+
+    param(
+      STORAGE.proxyMode,
+      'select',
+      {
+        'auto': 'Авто — TV через proxy, ПК напрямую',
+        'always': 'Всегда через proxy',
+        'never': 'Никогда не использовать proxy'
+      },
+      'auto',
+      'Сетевой режим',
+      'VIDAA/MSX: режим Авто использует совместимый CORS-proxy по той же схеме, что Online Mod.'
+    );
+
+    param(
+      STORAGE.mirror,
+      'input',
+      '',
+      '',
+      'Зеркало HDRezka',
+      'Пусто = авто. Прямой режим: kvk.zone. Proxy-режим: rezka.ag.'
+    );
+
+    param(
+      STORAGE.customProxy,
+      'input',
+      '',
+      '',
+      'Свой CORS-proxy • расширенно',
+      'Пусто = proxy-узлы, используемые текущим Online Mod.'
+    );
+
+    param(
+      STORAGE.syncOnlineMod,
+      'select',
+      { '1': 'Да', '0': 'Нет' },
+      '1',
+      'Синхронизировать с Online Mod',
+      'Импортирует/обновляет HDRezka cookie Online Mod на этом устройстве.'
+    );
+
+    param(
+      'hdrezka_denys_import_online',
+      'button',
+      undefined,
+      '',
+      '⚡ Импортировать сессию Online Mod',
+      'Если HDRezka уже авторизована в Online Mod.',
+      function () { importOnlineModSession(false); }
+    );
+
+    param(
+      STORAGE.quality,
+      'select',
+      {
+        'max': 'Максимальное',
+        '2160': 'До 2160p',
+        '1080': 'До 1080p',
+        '720': 'До 720p',
+        '480': 'До 480p'
+      },
+      'max',
+      'Качество по умолчанию',
+      'В плеер всё равно передаётся полный список качеств.'
+    );
+
+    param(
+      STORAGE.format,
+      'select',
+      {
+        'hls': 'HLS — рекомендуется для TV',
+        'mp4': 'MP4',
+        'auto': 'Авто'
+      },
+      'hls',
+      'Формат потока',
+      'Для VIDAA обычно стабильнее HLS.'
+    );
+
+    param(
+      STORAGE.streamMode,
+      'select',
+      {
+        'off': 'Без подмены CDN',
+        'fix': 'Fallback CDN',
+        'ukr': 'Украинский stream-proxy'
+      },
+      'off',
+      'Проксирование видеопотока',
+      'Нужно только если сам поток не запускается.'
+    );
+
+    param(
+      STORAGE.streamProxy,
+      'select',
+      {
+        'prx.ukrtelcdn.net': 'prx.ukrtelcdn.net',
+        'prx-cogent.ukrtelcdn.net': 'prx-cogent.ukrtelcdn.net',
+        'prx2-cogent.ukrtelcdn.net': 'prx2-cogent.ukrtelcdn.net',
+        'prx3-cogent.ukrtelcdn.net': 'prx3-cogent.ukrtelcdn.net',
+        'prx-ams.ukrtelcdn.net': 'prx-ams.ukrtelcdn.net',
+        'prx2-ams.ukrtelcdn.net': 'prx2-ams.ukrtelcdn.net'
+      },
+      'prx.ukrtelcdn.net',
+      'Stream-proxy HDRezka',
+      'Используется только при режиме «Украинский stream-proxy».'
+    );
+
+    param(
+      STORAGE.playerMode,
+      'select',
+      {
+        'lampa': 'Встроенный Lampa — рекомендуется',
+        'system': 'Как в общей настройке Lampa'
+      },
+      'lampa',
+      'Плеер HDREZKA',
+      'Встроенный Lampa нужен для Timeline, продолжения и NEXT/PREV.'
+    );
+
+    param(
+      STORAGE.resumeMode,
+      'select',
+      {
+        'continue': 'Автоматически продолжать',
+        'ask': 'Спрашивать',
+        'again': 'Всегда сначала'
+      },
+      'continue',
+      'Продолжение просмотра',
+      'Используется родной Lampa Timeline, без самодельного таймера.'
+    );
+
+    param(
+      STORAGE.autoNext,
+      'select',
+      { '1': 'Да', '0': 'Нет' },
+      '1',
+      'Авто следующая серия',
+      'Родной playlist Lampa.'
+    );
+
+    param(
+      STORAGE.rememberVoice,
+      'select',
+      { '1': 'Да', '0': 'Нет' },
+      '1',
+      'Запоминать озвучку',
+      'Отдельно для каждого фильма/сериала.'
+    );
+
+    param(
+      STORAGE.rememberSeason,
+      'select',
+      { '1': 'Да', '0': 'Нет' },
+      '1',
+      'Запоминать сезон',
+      'Возвращает к последнему выбранному сезону.'
+    );
+
+    param(
+      STORAGE.focusContinue,
+      'select',
+      { '1': 'Да', '0': 'Нет' },
+      '1',
+      'Фокус на недосмотренной серии',
+      'Использует реальный процент Lampa Timeline.'
+    );
+
+    param(
+      STORAGE.watchedAt,
+      'select',
+      { '85': '85%', '90': '90%', '95': '95%', '98': '98%' },
+      '95',
+      'Считать просмотренным после',
+      'После этого процента показывается отметка просмотренного.'
+    );
+
+    param(
+      'hdrezka_denys_check_account',
+      'button',
+      undefined,
+      '',
+      '✅ Проверить аккаунт',
+      'Проверяет текущую cookie/session.',
       function () {
-        if (!details) return;
-
-        var select = [
-          {
-            title:
-              'Сбросить',
-
-            reset:
-              true
-          },
-          {
-            title:
-              'Балансер',
-
-            subtitle:
-              'HDREZKA Premium',
-
-            stype:
-              'balancer',
-
-            items: [
-              {
-                title:
-                  'HDREZKA Premium',
-
-                selected:
-                  true,
-
-                index:
-                  0
-              }
-            ]
-          }
-        ];
-
-        function add(
-          type,
-          title,
-          source,
-          selectedIndex
-        ) {
-          if (
-            !source ||
-            !source.length
-          ) {
-            return;
-          }
-
-          var items =
-            source.map(
-              function (
-                row,
-                index
-              ) {
-                return {
-                  title:
-                    row.name ||
-                    String(
-                      index + 1
-                    ),
-
-                  selected:
-                    index ===
-                    selectedIndex,
-
-                  index:
-                    index
-                };
-              }
-            );
-
-          select.push({
-            title:
-              title,
-
-            subtitle:
-              items[
-                selectedIndex
-              ]
-                ? items[
-                    selectedIndex
-                  ].title
-                : '',
-
-            items:
-              items,
-
-            stype:
-              type
-          });
-        }
-
-        add(
-          'voice',
-          'Озвучка',
-          details.voices || [],
-          choice.voice
-        );
-
-        if (
-          details.is_series
-        ) {
-          add(
-            'season',
-            'Сезон',
-            details.seasons || [],
-            choice.season
-          );
-        }
-
-        filter.set(
-          'filter',
-          select
-        );
-
-        var chosen = [
-          'Балансер: HDREZKA Premium'
-        ];
-
-        var voice =
-          currentVoice();
-
-        var season =
-          currentSeason();
-
-        if (
-          voice &&
-          voice.name
-        ) {
-          chosen.push(
-            'Озвучка: ' +
-            voice.name
-          );
-        }
-
-        if (
-          details.is_series &&
-          season &&
-          season.name
-        ) {
-          chosen.push(
-            'Сезон: ' +
-            season.name
-          );
-        }
-
-        try {
-          filter.chosen(
-            'filter',
-            chosen
-          );
-        } catch (e) {}
-      };
-
-    var streamMemory =
-      {};
-
-    function episodeKey(
-      episode,
-      voice
-    ) {
-      return [
-        details &&
-        details.url ||
-        '',
-        voice &&
-        voice.id ||
-        '',
-        episode &&
-        episode.season_id ||
-        0,
-        episode &&
-        episode.episode_id ||
-        0
-      ].join('|');
-    }
-
-    function requestStream(
-      episode,
-      voice
-    ) {
-      var key =
-        episodeKey(
-          episode,
-          voice
-        );
-
-      if (
-        streamMemory[key]
-      ) {
-        return streamMemory[key];
+        notice('HDREZKA: проверяем аккаунт…');
+        checkAccount()
+          .then(function () { notice('✅ Сессия активна'); })
+          .catch(function (error) { notice('❌ ' + error.message); });
       }
-
-      var promise =
-        api(
-          '/api/stream',
-          {
-            url:
-              details.url,
-
-            translator_id:
-              voice.id,
-
-            season:
-              details.is_series
-                ? episode.season_id
-                : null,
-
-            episode:
-              details.is_series
-                ? episode.episode_id
-                : null
-          }
-        ).then(
-          function (data) {
-            if (
-              !data ||
-              !data.url
-            ) {
-              throw new Error(
-                'HDREZKA не вернула видеопоток'
-              );
-            }
-
-            return data;
-          }
-        ).catch(
-          function (error) {
-            delete streamMemory[key];
-            throw error;
-          }
-        );
-
-      streamMemory[key] =
-        promise;
-
-      return promise;
-    }
-
-    function sortedEpisodes() {
-      return (
-        details &&
-        details.episodes
-          ? details.episodes.slice()
-          : []
-      ).sort(
-        function (a, b) {
-          var sa =
-            parseInt(
-              a.season_id,
-              10
-            ) || 0;
-
-          var sb =
-            parseInt(
-              b.season_id,
-              10
-            ) || 0;
-
-          if (sa !== sb) {
-            return sa - sb;
-          }
-
-          return (
-            (
-              parseInt(
-                a.episode_id,
-                10
-              ) || 0
-            ) -
-            (
-              parseInt(
-                b.episode_id,
-                10
-              ) || 0
-            )
-          );
-        }
-      );
-    }
-
-    function episodePlayerTitle(
-      episode
-    ) {
-      var base =
-        movieTitle(
-          object.movie ||
-          {}
-        );
-
-      if (
-        !details ||
-        !details.is_series ||
-        !episode
-      ) {
-        return base;
-      }
-
-      return (
-        base +
-        ' / S' +
-        episode.season_id +
-        'E' +
-        episode.episode_id +
-        ' / ' +
-        (
-          episode.name ||
-          (
-            'Серия ' +
-            episode.episode_id
-          )
-        )
-      );
-    }
-
-    function addHistory() {
-      try {
-        if (
-          object.movie &&
-          object.movie.id &&
-          Lampa.Favorite &&
-          Lampa.Favorite.add
-        ) {
-          Lampa.Favorite.add(
-            'history',
-            object.movie,
-            100
-          );
-        }
-      }
-      catch (e) {}
-    }
-
-    function preparePlayerItem(
-      episode,
-      voice
-    ) {
-      var timeline =
-        wrapTimeline(
-          timelineView(
-            details.is_series
-              ? episode
-              : null
-          ),
-          details.is_series
-            ? episode
-            : null
-        );
-
-      var item = {
-        title:
-          episodePlayerTitle(
-            episode
-          ),
-
-        quality:
-          {},
-
-        subtitles:
-          [],
-
-        timeline:
-          timeline,
-
-        card:
-          object.movie,
-
-        movie:
-          object.movie,
-
-        season:
-          details.is_series
-            ? episode.season_id
-            : null,
-
-        episode:
-          details.is_series
-            ? episode.episode_id
-            : null
-      };
-
-      DenysPlayerScope.decorate(
-        item
-      );
-
-      return item;
-    }
-
-    function buildRealPlaylist(
-      selectedEpisode,
-      voice,
-      selectedData
-    ) {
-      var listEpisodes =
-        details.is_series
-          ? sortedEpisodes()
-          : [
-              {
-                season_id:
-                  null,
-                episode_id:
-                  null,
-                name:
-                  'Смотреть фильм'
-              }
-            ];
-
-      var playlist =
-        [];
-
-      var first =
-        null;
-
-      listEpisodes.forEach(
-        function (ep) {
-          var playerItem =
-            preparePlayerItem(
-              ep,
-              voice
-            );
-
-          var isCurrent =
-            !details.is_series ||
-            (
-              String(
-                ep.season_id
-              ) ===
-              String(
-                selectedEpisode.season_id
-              ) &&
-              String(
-                ep.episode_id
-              ) ===
-              String(
-                selectedEpisode.episode_id
-              )
-            );
-
-          if (isCurrent) {
-            playerItem.url =
-              pickQuality(
-                selectedData
-              );
-
-            playerItem.quality =
-              selectedData.quality ||
-              {};
-
-            playerItem.subtitles =
-              selectedData.subtitles ||
-              [];
-
-            first =
-              playerItem;
-          }
-          else {
-            /*
-              Официальный Playlist Lampa умеет url как function(call).
-              Поэтому NEXT/PREV может сам запросить поток нужной серии
-              без выхода из плеера.
-            */
-            playerItem.url =
-              function (call) {
-                saveProgress(
-                  ep
-                );
-
-                DenysPlayerScope.begin();
-
-                notice(
-                  'HDREZKA: серия ' +
-                  ep.episode_id +
-                  '…'
-                );
-
-                requestStream(
-                  ep,
-                  voice
-                ).then(
-                  function (data) {
-                    playerItem.url =
-                      pickQuality(
-                        data
-                      );
-
-                    playerItem.quality =
-                      data.quality ||
-                      {};
-
-                    playerItem.subtitles =
-                      data.subtitles ||
-                      [];
-
-                    playerItem.timeline =
-                      wrapTimeline(
-                        timelineView(
-                          ep
-                        ),
-                        ep
-                      );
-
-                    DenysPlayerScope.decorate(
-                      playerItem
-                    );
-
-                    /*
-                      Когда URL уже готов — родной Lampa Playlist
-                      сам уничтожит текущую серию и запустит эту.
-                    */
-                    call();
-
-                    prefetchAround(
-                      ep,
-                      voice
-                    );
-                  }
-                ).catch(
-                  function (error) {
-                    notice(
-                      'HDREZKA: ' +
-                      error.message
-                    );
-
-                    try {
-                      Lampa.Player.close();
-                    } catch (e) {}
-                  }
-                );
-              };
-          }
-
-          playlist.push(
-            playerItem
-          );
-        }
-      );
-
-      if (!first) {
-        first =
-          playlist[0];
-      }
-
-      return {
-        first:
-          first,
-        playlist:
-          playlist
-      };
-    }
-
-    function prefetchAround(
-      episode,
-      voice
-    ) {
-      if (
-        setting(
-          STORAGE.prefetchNext,
-          '1'
-        ) !== '1' ||
-        !details.is_series
-      ) {
-        return;
-      }
-
-      var ordered =
-        sortedEpisodes();
-
-      var index =
-        -1;
-
-      for (
-        var i = 0;
-        i < ordered.length;
-        i++
-      ) {
-        if (
-          String(
-            ordered[i].season_id
-          ) ===
-          String(
-            episode.season_id
-          ) &&
-          String(
-            ordered[i].episode_id
-          ) ===
-          String(
-            episode.episode_id
-          )
-        ) {
-          index = i;
-          break;
-        }
-      }
-
-      if (
-        index >= 0 &&
-        ordered[index + 1]
-      ) {
-        /*
-          Ошибку prefetch не показываем — это только ускорение.
-        */
-        requestStream(
-          ordered[index + 1],
-          voice
-        ).catch(
-          function () {}
-        );
-      }
-    }
-
-    function launchPremium(
-      episode,
-      voice
-    ) {
-      saveProgress(
-        details.is_series
-          ? episode
-          : null
-      );
-
-      addHistory();
-
-      DenysPlayerScope.begin();
-
-      notice(
-        'HDREZKA: получаем Premium-поток…'
-      );
-
-      requestStream(
-        details.is_series
-          ? episode
-          : {
-              season_id:
-                null,
-              episode_id:
-                null
-            },
-        voice
-      ).then(
-        function (data) {
-          var built =
-            buildRealPlaylist(
-              details.is_series
-                ? episode
-                : {
-                    season_id:
-                      null,
-                    episode_id:
-                      null
-                  },
-              voice,
-              data
-            );
-
-          var first =
-            built.first;
-
-          var playlist =
-            built.playlist;
-
-          /*
-            Это настоящий playlist, а не [first].
-            В сериале он содержит ВСЕ серии ВСЕХ сезонов
-            выбранной озвучки.
-          */
-          first.playlist =
-            playlist;
-
-          DenysPlayerScope.decorate(
-            first
-          );
-
-          Lampa.Player.play(
-            first
-          );
-
-          Lampa.Player.playlist(
-            playlist
-          );
-
-          prefetchAround(
-            details.is_series
-              ? episode
-              : null,
-            voice
-          );
-        }
-      ).catch(
-        function (error) {
-          notice(
-            'HDREZKA: ' +
-            error.message
-          );
-        }
-      );
-    }
-
-    this.renderItems =
-      function () {
-        var self = this;
-
-        this.reset();
-
-        if (!details) {
-          this.empty(
-            'HDREZKA: нет данных'
-          );
-          return;
-        }
-
-        var voice =
-          currentVoice();
-
-        var season =
-          currentSeason();
-
-        var items = [];
-
-        if (
-          details.is_series
-        ) {
-          if (!season) {
-            this.empty(
-              'HDREZKA: сезоны не найдены'
-            );
-            return;
-          }
-
-          items =
-            (
-              details.episodes ||
-              []
-            ).filter(
-              function (episode) {
-                return (
-                  String(
-                    episode.season_id
-                  ) ===
-                  String(
-                    season.id
-                  )
-                );
-              }
-            );
-        }
-        else {
-          items = [
-            {
-              name:
-                'Смотреть фильм'
-            }
-          ];
-        }
-
-        if (!items.length) {
-          this.empty(
-            details.is_series
-              ? 'HDREZKA: серии не найдены'
-              : 'HDREZKA: видео не найдено'
-          );
-          return;
-        }
-
-        var continueTarget =
-          null;
-
-        items.forEach(
-          function (episode) {
-            var timeline =
-              wrapTimeline(
-                timelineView(
-                  details.is_series
-                    ? episode
-                    : null
-                ),
-                details.is_series
-                  ? episode
-                  : null
-              );
-
-            var road =
-              timelineRoad(
-                timeline
-              );
-
-            var progress =
-              readJson(
-                STORAGE.progress
-              )[
-                preferenceKey()
-              ] || {};
-
-            var isContinue =
-              details.is_series &&
-              setting(
-                STORAGE.continueMode,
-                '1'
-              ) === '1' &&
-              season &&
-              String(
-                progress.season
-              ) ===
-              String(
-                season.id
-              ) &&
-              String(
-                progress.episode
-              ) ===
-              String(
-                episode.episode_id
-              );
-
-            var displayTitle =
-              episode.name ||
-              (
-                details.is_series
-                  ? (
-                      'Серия ' +
-                      episode.episode_id
-                    )
-                  : 'Смотреть фильм'
-              );
-
-            if (isContinue) {
-              displayTitle =
-                '▶ ' +
-                displayTitle;
-            }
-
-            var progressInfo =
-              '';
-
-            if (
-              road.duration > 0 &&
-              road.percent > 0 &&
-              road.percent < DenysPlayback.threshold()
-            ) {
-              try {
-                progressInfo =
-                  ' • ' +
-                  Math.round(
-                    road.percent
-                  ) +
-                  '% • ' +
-                  Lampa.Utils.secondsToTime(
-                    road.time,
-                    true
-                  );
-              }
-              catch (e) {
-                progressInfo =
-                  ' • ' +
-                  Math.round(
-                    road.percent
-                  ) +
-                  '%';
-              }
-            }
-            else if (
-              road.percent >= DenysPlayback.threshold()
-            ) {
-              progressInfo =
-                ' • ✓ ПРОСМОТРЕНО';
-            }
-
-            var element = {
-              title:
-                displayTitle,
-
-              quality:
-                qualityLabel(),
-
-              info:
-                (
-                  voice &&
-                  voice.name
-                    ? (
-                        ' / ' +
-                        voice.name
-                      )
-                    : ''
-                ) +
-                (
-                  isContinue
-                    ? ' • ПРОДОЛЖИТЬ'
-                    : ''
-                ) +
-                progressInfo
-            };
-
-            var item =
-              Lampa.Template.get(
-                'hdrezka_premium_item',
-                element
-              );
-
-            if (
-              isContinue &&
-              setting(
-                STORAGE.focusContinue,
-                '1'
-              ) === '1'
-            ) {
-              continueTarget =
-                item[0];
-            }
-
-            /*
-              Нативный прогресс Lampa:
-              полоска, процент, таймкод и автоматическое
-              сохранение/восстановление позиции.
-            */
-            try {
-              if (
-                setting(
-                  STORAGE.showProgress,
-                  '1'
-                ) === '1' &&
-                Lampa.Timeline &&
-                Lampa.Timeline.render
-              ) {
-                item.append(
-                  Lampa.Timeline.render(
-                    timeline
-                  )
-                );
-              }
-
-              if (
-                Lampa.Timeline &&
-                Lampa.Timeline.details
-              ) {
-                item
-                  .find(
-                    '.online__quality'
-                  )
-                  .append(
-                    Lampa.Timeline.details(
-                      timeline,
-                      ' / '
-                    )
-                  );
-              }
-
-              if (
-                road.percent >= DenysPlayback.threshold()
-              ) {
-                item.append(
-                  '<div class="torrent-item__viewed">' +
-                  Lampa.Template.get(
-                    'icon_star',
-                    {},
-                    true
-                  ) +
-                  '</div>'
-                );
-              }
-            }
-            catch (e) {}
-
-            item.on(
-              'hover:focus',
-              function (e) {
-                last =
-                  e.target;
-
-                scroll.update(
-                  $(e.target),
-                  true
-                );
-              }
-            );
-
-            item.on(
-              'hover:enter',
-              function () {
-                if (!voice) {
-                  notice(
-                    'HDREZKA: озвучка не найдена'
-                  );
-                  return;
-                }
-
-                launchPremium(
-                  details.is_series
-                    ? episode
-                    : {
-                        season_id:
-                          null,
-                        episode_id:
-                          null,
-                        name:
-                          'Смотреть фильм'
-                      },
-                  voice
-                );
-              }
-            );
-
-            scroll.append(
-              item
-            );
-          }
-        );
-
-        this.activity.loader(false);
-
-        if (
-          continueTarget
-        ) {
-          last =
-            continueTarget;
-
-          this.start(false);
-
-          setTimeout(
-            function () {
-              try {
-                scroll.update(
-                  $(continueTarget),
-                  true
-                );
-              } catch (e) {}
-            },
-            80
-          );
-        }
-        else {
-          this.start(true);
-        }
-      };
-
-    this.reset = function () {
-      scroll
-        .render()
-        .find('.empty')
-        .remove();
-
-      scroll.clear();
-      scroll.reset();
-    };
-
-    this.empty = function (message) {
-      var empty =
-        Lampa.Template.get(
-          'list_empty'
-        );
-
-      if (message) {
-        empty
-          .find(
-            '.empty__descr'
-          )
-          .text(message);
-      }
-
-      scroll.append(
-        empty
-      );
-
-      this.activity.loader(false);
-      this.start(true);
-    };
-
-    this.start = function (
-      firstSelect
-    ) {
-      if (
-        Lampa.Activity.active()
-          .activity !==
-        this.activity
-      ) {
-        return;
-      }
-
-      if (firstSelect) {
-        last =
-          scroll
-            .render()
-            .find(
-              '.selector'
-            )
-            .eq(0)[0];
-      }
-
-      try {
-        Lampa.Background.immediately(
-          Lampa.Utils.cardImgBackground(
-            object.movie
-          )
-        );
-      } catch (e) {}
-
-      Lampa.Controller.add(
-        'content',
-        {
-          toggle:
-            function () {
-              Lampa.Controller
-                .collectionSet(
-                  scroll.render(),
-                  files.render()
-                );
-
-              Lampa.Controller
-                .collectionFocus(
-                  last || false,
-                  scroll.render()
-                );
-            },
-
-          up:
-            function () {
-              if (
-                Navigator.canmove(
-                  'up'
-                )
-              ) {
-                Navigator.move(
-                  'up'
-                );
-              }
-              else {
-                Lampa.Controller.toggle(
-                  'head'
-                );
-              }
-            },
-
-          down:
-            function () {
-              Navigator.move(
-                'down'
-              );
-            },
-
-          right:
-            function () {
-              if (
-                Navigator.canmove(
-                  'right'
-                )
-              ) {
-                Navigator.move(
-                  'right'
-                );
-              }
-              else {
-                filter.show(
-                  'Фильтр',
-                  'filter'
-                );
-              }
-            },
-
-          left:
-            function () {
-              if (
-                Navigator.canmove(
-                  'left'
-                )
-              ) {
-                Navigator.move(
-                  'left'
-                );
-              }
-              else {
-                Lampa.Controller.toggle(
-                  'menu'
-                );
-              }
-            },
-
-          back:
-            this.back
-        }
-      );
-
-      Lampa.Controller.toggle(
-        'content'
-      );
-    };
-
-    this.render =
-      function () {
-        return files.render();
-      };
-
-    this.back =
-      function () {
-        Lampa.Activity.backward();
-      };
-
-    this.pause =
-      function () {};
-
-    this.stop =
-      function () {};
-
-    this.destroy =
-      function () {
-        try {
-          files.destroy();
-        } catch (e) {}
-
-        try {
-          scroll.destroy();
-        } catch (e) {}
-      };
+    );
+
+    param(
+      'hdrezka_denys_diag',
+      'button',
+      undefined,
+      '',
+      '🧪 Диагностика',
+      'Платформа, host, proxy, cookie, маршрут.',
+      showDiagnostics
+    );
+
+    param(
+      STORAGE.debug,
+      'select',
+      { '0': 'Нет', '1': 'Да' },
+      '0',
+      'Debug в консоль',
+      'Для диагностики запросов.'
+    );
+
+    param(
+      'hdrezka_denys_author',
+      'select',
+      { 'denys': 'DENYS EDITION • v' + VERSION },
+      'denys',
+      'Автор',
+      'HDREZKA Premium for Lampa • by DENYS'
+    );
   }
 
   function loadRezka(movie) {
     if (!movie) {
-      notice(
-        'HDREZKA: не удалось определить фильм'
-      );
+      notice('HDREZKA: карточка фильма не найдена');
       return;
     }
 
-    try {
-      Lampa.Component.add(
-        COMPONENT,
-        component
-      );
-    } catch (e) {}
+    if (!accountConnected()) {
+      if (importOnlineModSession(true)) {
+        notice('HDREZKA: использована сессия Online Mod');
+      } else {
+        notice('HDREZKA: сначала подключите аккаунт');
+        openAccountMenu();
+        return;
+      }
+    }
 
     Lampa.Activity.push({
       url: '',
       title: 'HDREZKA Premium • by DENYS',
       component: COMPONENT,
-      search:
-        movie.title ||
-        movie.name ||
-        '',
-      search_one:
-        movie.title ||
-        movie.name ||
-        '',
-      search_two:
-        movie.original_title ||
-        movie.original_name ||
-        '',
-      movie:
-        movie,
-      page:
-        1
+      movie: movie,
+      page: 1
     });
   }
 
   function addMainButton() {
-    function playButton() {
-      return $(
+    Lampa.Listener.follow('full', function (e) {
+      if (!e || e.type !== 'complite' || !e.object || !e.object.activity) return;
+
+      var root = e.object.activity.render();
+      root.find('.view--hdrezka-premium, .view--hdrezka-account').remove();
+
+      var movie = e.data && e.data.movie ? e.data.movie : null;
+
+      var play = $(
         '<div class="full-start__button selector view--hdrezka-premium" ' +
-        'data-subtitle="HDREZKA Premium • by DENYS ' +
-        VERSION +
-        '">' +
+        'data-subtitle="HDREZKA Premium • by DENYS v' + VERSION + '">' +
           '<svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">' +
             '<circle cx="64" cy="64" r="52" stroke="currentColor" stroke-width="12"/>' +
             '<path d="M88 64L51 86V42L88 64Z" fill="currentColor"/>' +
@@ -4554,332 +2847,89 @@
           '<span>HDREZKA</span>' +
         '</div>'
       );
-    }
 
-    function accountButton() {
-      var connected =
-        accountConnected();
-
-      return $(
+      var account = $(
         '<div class="full-start__button selector view--hdrezka-account" ' +
-        'data-subtitle="' +
-        (
-          connected
-            ? (
-                'HDRezka подключена • ' +
-                accountLabel()
-              )
-            : (
-                'Подключить Premium-аккаунт HDRezka'
-              )
-        ) +
-        '">' +
+        'data-subtitle="' + (accountConnected() ? 'HDRezka Premium подключена' : 'Подключить аккаунт HDRezka') + '">' +
           '<svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">' +
             '<circle cx="64" cy="43" r="21" stroke="currentColor" stroke-width="10"/>' +
             '<path d="M28 105c5-23 18-35 36-35s31 12 36 35" stroke="currentColor" stroke-width="10" stroke-linecap="round"/>' +
           '</svg>' +
-          '<span>' +
-          (
-            connected
-              ? 'REZKA ✓'
-              : 'ВОЙТИ'
-          ) +
-          '</span>' +
+          '<span>' + (accountConnected() ? 'REZKA ✓' : 'ВОЙТИ') + '</span>' +
         '</div>'
       );
-    }
 
-    Lampa.Listener.follow(
-      'full',
-      function (e) {
-        if (
-          !e ||
-          e.type !== 'complite' ||
-          !e.object ||
-          !e.object.activity
-        ) {
-          return;
-        }
+      play.on('hover:enter', function () {
+        loadRezka(movie);
+      });
 
-        var root =
-          e.object.activity.render();
+      account.on('hover:enter', function () {
+        openAccountMenu();
+      });
 
-        /*
-          Если старая версия успела оставить кнопку —
-          заменяем её нашей v5.
-        */
-        root
-          .find(
-            '.view--hdrezka-premium, .view--hdrezka-account'
-          )
-          .remove();
-
-        var movie =
-          e.data &&
-          e.data.movie
-            ? e.data.movie
-            : null;
-
-        var play =
-          playButton();
-
-        var account =
-          accountButton();
-
-        play.on(
-          'hover:enter',
-          function () {
-            if (
-              !accountConnected() &&
-              (
-                !value(
-                  STORAGE.login
-                ) ||
-                !value(
-                  STORAGE.password
-                )
-              )
-            ) {
-              openPairing();
-              return;
-            }
-
-            loadRezka(
-              movie
-            );
-          }
-        );
-
-        account.on(
-          'hover:enter',
-          function () {
-            openAccountMenu();
-          }
-        );
-
-        function insertAfter(
-          target
-        ) {
-          if (
-            !target ||
-            !target.length
-          ) {
-            return false;
-          }
-
-          target.after(
-            play
-          );
-
-          play.after(
-            account
-          );
-
-          updateAccountButtons();
-
-          return true;
-        }
-
-        if (
-          insertAfter(
-            root.find(
-              '.view--torrent'
-            )
-          )
-        ) {
-          return;
-        }
-
-        if (
-          insertAfter(
-            root.find(
-              '.view--online_mod'
-            )
-          )
-        ) {
-          return;
-        }
-
-        var buttons =
-          root.find(
-            '.full-start__buttons'
-          );
-
-        if (!buttons.length) {
-          buttons =
-            root.find(
-              '.full-start-new__buttons'
-            );
-        }
-
-        if (buttons.length) {
-          buttons.append(
-            play
-          );
-
-          buttons.append(
-            account
-          );
-
-          updateAccountButtons();
-        }
+      function insertAfter(target) {
+        if (!target || !target.length) return false;
+        target.after(play);
+        play.after(account);
+        updateAccountButtons();
+        return true;
       }
-    );
+
+      if (insertAfter(root.find('.view--torrent'))) return;
+      if (insertAfter(root.find('.view--online_mod'))) return;
+
+      var buttons = root.find('.full-start__buttons');
+      if (!buttons.length) buttons = root.find('.full-start-new__buttons');
+
+      if (buttons.length) {
+        buttons.append(play);
+        buttons.append(account);
+        updateAccountButtons();
+      }
+    });
   }
 
   function registerManifest() {
     try {
-      Lampa.Manifest.plugins = {
-        type:
-          'video',
-
-        version:
-          VERSION,
-
-        name:
-          'HDREZKA Premium • by DENYS',
-
-        description:
-          'HDRezka Premium • DIRECT REZKA AJAX • SAME-ORIGIN MSX • by DENYS',
-
-        component:
-          COMPONENT,
-
-        onContextMenu:
-          function () {
-            return {
-              name:
-                'HDREZKA Premium • by DENYS',
-
-              description:
-                'Ваш аккаунт HDRezka'
-            };
-          },
-
-        onContextLauch:
-          function (movie) {
-            loadRezka(movie);
-          }
-      };
-    } catch (e) {}
-  }
-
-  function installProgressSafety() {
-    if (
-      window.hdrezka_denys_progress_safety_v4
-    ) {
-      return;
-    }
-
-    window.hdrezka_denys_progress_safety_v4 =
-      true;
-
-    /*
-      Используем родные события Lampa Player.
-      Таймкод сохраняет официальный Player Timeline.
-    */
-    try {
-      if (
-        Lampa.Player &&
-        Lampa.Player.listener
-      ) {
-        Lampa.Player.listener.follow(
-          'start',
-          function (data) {
-            DenysPlayerScope.onStart(
-              data
-            );
-          }
-        );
-
-        Lampa.Player.listener.follow(
-          'destroy',
-          function () {
-            DenysPlayerScope.onDestroy();
-          }
-        );
+      if (Lampa.Manifest) {
+        Lampa.Manifest.plugins = Lampa.Manifest.plugins || {};
+        Lampa.Manifest.plugins.hdrezka_denys = {
+          name: 'HDREZKA Premium • by DENYS',
+          version: VERSION,
+          description: 'Premium HDRezka • Online Mod compatible proxy • native Timeline/Playlist'
+        };
       }
-    }
-    catch (e) {}
+    } catch (e) {}
   }
 
   function init() {
     try {
-      /*
-        Миграция v2/v3:
-        1 = continue, 0 = again.
-      */
-      if (
-        value(
-          STORAGE.resumeMode
-        ) === '1'
-      ) {
-        setValue(
-          STORAGE.resumeMode,
-          'continue'
-        );
-      }
-      else if (
-        value(
-          STORAGE.resumeMode
-        ) === '0'
-      ) {
-        setValue(
-          STORAGE.resumeMode,
-          'again'
-        );
-      }
-
-      addSettings();
-      installProgressSafety();
+      importOnlineModSession(true);
       addStyle();
       addTemplates();
+      addSettings();
+      addPlayerListeners();
+
+      Lampa.Component.add(COMPONENT, component);
       addMainButton();
       registerManifest();
       updateAccountButtons();
 
-      if (sameOrigin()) {
-        wakeStatus(
-          '● DIRECT REZKA • SAME ORIGIN • готов'
-        );
-      }
-
-      console.log(
-        'HDREZKA Premium • by DENYS ' +
-        VERSION +
-        ' started'
-      );
+      console.log('HDREZKA Premium • by DENYS v' + VERSION + ' loaded');
     } catch (e) {
-      notice(
-        'HDREZKA Premium: ' +
-        e.message
-      );
+      console.error('HDREZKA DENYS init error', e);
+      notice('HDREZKA: ошибка запуска плагина');
     }
   }
 
-  if (window.appready) {
+  if (window.Lampa) {
     init();
-  }
-  else if (
-    Lampa.Listener &&
-    Lampa.Listener.follow
-  ) {
-    Lampa.Listener.follow(
-      'app',
-      function (e) {
-        if (
-          e &&
-          e.type === 'ready'
-        ) {
-          init();
-        }
+  } else {
+    var wait = setInterval(function () {
+      if (window.Lampa) {
+        clearInterval(wait);
+        init();
       }
-    );
-  }
-  else {
-    setTimeout(
-      init,
-      1000
-    );
+    }, 250);
   }
 })();
