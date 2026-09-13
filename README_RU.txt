@@ -1,136 +1,94 @@
-HDREZKA Premium • DENYS EDITION v6.0
-=======================================
+HDREZKA Premium • DENYS ADAPTER v7.0
+=====================================
 
-ЭТА ВЕРСИЯ ПОЛНОСТЬЮ ОТКАЗЫВАЕТСЯ ОТ СТАРОЙ СХЕМЫ:
-Render -> HDRezka.
+ЭТО ПОЛНАЯ СМЕНА ПОДХОДА.
+
+v7 НЕ ДЕЛАЕТ:
+- собственный поиск HDRezka;
+- собственный CORS proxy;
+- собственный парсинг страницы;
+- собственный login;
+- собственный Timeline;
+- собственный playlist/player.
+
+ВМЕСТО ЭТОГО v7 ИСПОЛЬЗУЕТ УЖЕ УСТАНОВЛЕННЫЙ ONLINE MOD.
 
 Почему:
-HDRezka отдавала Render антибот-страницу:
-"Проверяем, что вы не бот!"
+актуальный Online Mod уже содержит источник rezka2 с:
+- рабочей логикой зеркал rezka.ag / kvk.zone;
+- proxyLink;
+- заполнением cookie через proxy;
+- engine/ajax/search.php;
+- get_episodes / get_stream / get_movie;
+- декодированием Rezka;
+- субтитрами и качествами;
+- Lampa.Timeline;
+- полноценным Lampa.Player.playlist;
+- NEXT/PREV;
+- контекстным меню;
+- сбросом таймкода;
+- выбором плеера;
+- копированием ссылки.
 
-Поэтому Python backend больше НЕ парсит HDRezka и вообще НЕ делает
-запросов к HDRezka.
+ЧТО ДЕЛАЕТ DENYS ADAPTER
+------------------------
+1. Добавляет отдельную красивую кнопку HDREZKA.
+2. Добавляет кнопку REZKA ✓ / ВОЙТИ.
+3. Перед запуском временно переключает Online Mod на balanser=rezka2.
+4. На VIDAA/MSX временно включает online_mod_proxy_rezka2=true.
+5. Вызывает РОДНУЮ кнопку Online Mod, поэтому запускается его собственный
+   loadOnline() со всеми checkMyIp / proxy / component init.
+6. Когда Online Mod activity уже создана, возвращает пользователю его прежние
+   настройки Online Mod, поэтому Filmix и другие источники не ломаются.
+7. Для входа открывает штатные настройки Online Mod HDRezka.
 
-НОВАЯ АРХИТЕКТУРА
-------------------
-Обычная Lampa / Media Station X
-        ↓
-HDREZKA Premium plugin.js
-        ↓
-direct / Online-Mod-compatible CORS proxy
-        ↓
-HDRezka
+ЗАВИСИМОСТЬ
+------------
+В обычной Lampa должен быть установлен актуальный Online Mod:
+https://nb557.github.io/plugins/online_mod.js
 
-Render нужен только для раздачи plugin.js.
-
-ВАЖНО
------
-Не меняйте Start Parameter Media Station X.
-Используйте вашу обычную Lampa, где уже стоят Filmix, Online Mod
-и остальные плагины.
+У пользователя он уже используется — именно поэтому этот вариант выбран.
 
 УСТАНОВКА
 ---------
-1. Залить ВСЕ файлы архива в GitHub с заменой.
+1. Все файлы архива -> GitHub с заменой.
 2. Commit.
-3. Дождаться Render -> Live.
-4. В обычной Lampa удалить старые тестовые HDREZKA URL, если они есть.
-5. Добавить:
+3. Render -> Live.
+4. Вернуть/оставить обычную Lampa в Media Station X.
+5. Online Mod должен быть установлен как раньше.
+6. Удалить старые тестовые DENYS URL, оставить один:
 
-https://hdrezka-premium-lampa.onrender.com/plugin.js?v=60
+https://hdrezka-premium-lampa.onrender.com/plugin.js?v=70
 
-6. Полностью перезапустить Lampa / Media Station X.
+7. Полностью перезапустить Lampa / Media Station X.
 
-ЧТО ВНУТРИ
-----------
-- отдельная кнопка HDREZKA на карточке фильма;
-- отдельная кнопка ВОЙТИ / REZKA ✓;
-- импорт сохранённой HDRezka-cookie из Online Mod;
-- синхронизация cookie обратно в Online Mod;
-- логин через /ajax/login/;
-- VIDAA/MSX режим через CORS proxy по той же схеме proxyLink,
-  которую использует актуальный Online Mod;
-- прямой режим на ПК;
-- зеркала: прямой режим kvk.zone, proxy-режим rezka.ag;
-- fallback нескольких proxy-узлов;
-- fast search /engine/ajax/search.php;
-- fallback full search;
-- нормальное сопоставление по названию и году;
-- парсинг .initCDNSeriesEvents / .initCDNMoviesEvents;
-- переводы из #translators-list;
-- сезоны/серии через ajax/get_cdn_series action=get_episodes;
-- фильм через action=get_movie;
-- серия через action=get_stream;
-- декодирование HDRezka payload;
-- качества HLS/MP4;
-- субтитры;
-- native Lampa.Timeline;
-- реальный Lampa.Player.playlist;
-- lazy NEXT/PREV;
-- переход между сезонами;
-- автоследующая серия;
-- история Lampa;
-- запоминание озвучки и сезона;
-- фокус на недосмотренной серии;
-- сброс таймкода долгим OK;
-- диагностика маршрута;
-- optional stream CDN fix / Ukrainian stream proxy.
+ВХОД НА VIDAA / MSX
+-------------------
+Нажать ВОЙТИ.
+DENYS откроет штатные настройки Online Mod.
 
-ВХОД
-----
-Настройки -> HDREZKA Premium • by DENYS
+Ввести:
+- Логин / email HDrezka
+- Пароль HDrezka
 
-Введите:
-Логин / E-mail
-Пароль
+Затем выбрать:
+- Заполнить куки для HDrezka
 
-Затем:
-Подключить / проверить HDRezka -> Войти.
+Именно этот механизм Online Mod использует proxy/Set-Cookie и предназначен
+для платформ, где обычная браузерная авторизация недостаточна.
 
-На VIDAA/MSX режим "Авто" использует внешний CORS proxy, совместимый
-с текущим Online Mod.
+После появления online_mod_rezka2_cookie кнопка DENYS покажет REZKA ✓.
 
-ВАЖНО ПО ПРИВАТНОСТИ
---------------------
-В proxy-режиме внешний CORS-proxy технически видит запросы к HDRezka,
-включая cookie и запрос входа. Плагин показывает предупреждение перед
-первым proxy-входом.
+ВАЖНО
+-----
+Никаких данных аккаунта DENYS v7 отдельно не хранит.
+Он использует те же online_mod_rezka2_* storage, что сам Online Mod.
 
-Если HDRezka уже подключена в Online Mod, лучше использовать:
-"Импортировать сессию Online Mod"
-— тогда пароль заново вводить не нужно.
-
-После успешного входа пароль из настроек DENYS EDITION очищается.
-
-РЕКОМЕНДУЕМЫЕ НАСТРОЙКИ ДЛЯ HISENSE VIDAA / MSX
-------------------------------------------------
-Сетевой режим:
-Авто — TV через proxy, ПК напрямую
-
-Формат потока:
-HLS
-
-Плеер:
-Встроенный Lampa
-
-Продолжение просмотра:
-Автоматически продолжать
-
-Авто следующая серия:
-Да
-
-Проксирование видеопотока:
-Без подмены CDN
-(включать только если сам фильм не стартует)
-
-ПРОВЕРКА
---------
+ПРОВЕРКА RENDER
+---------------
 https://hdrezka-premium-lampa.onrender.com/health
 
 Должно быть:
-version = 6.0.0
-mode = plugin-only
-rezka_backend = false
-
-Это принципиально важно:
-Render больше НЕ контактирует с HDRezka.
+version = 7.0.0
+mode = online-mod-adapter
+rezka_network_in_denys = false
