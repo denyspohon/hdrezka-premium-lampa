@@ -5,7 +5,7 @@
   window.hdrezka_premium_lampa_ready = true;
 
   var API = '__API_BASE__';
-  var VERSION = '8.0.0';
+  var VERSION = '8.0.1';
   var AUTHOR = 'DENYS';
   var EDITION = 'DENYS EDITION';
   var COMPONENT = 'hdrezka_premium';
@@ -1310,14 +1310,7 @@
       ];
     }
 
-    function preferenceKey() {
-      if (
-        details &&
-        details.url
-      ) {
-        return details.url;
-      }
-
+    function movieFallbackKey() {
       var movie =
         object.movie || {};
 
@@ -1329,6 +1322,64 @@
           ''
         )
       );
+    }
+
+    function preferenceKey() {
+      /*
+        URL HDRezka может меняться вместе с зеркалом, поэтому URL нельзя
+        использовать как основной ключ состояния. post id у Rezka остаётся
+        тем же и надёжно связывает озвучку/сезон/прогресс с конкретной карточкой.
+      */
+      if (
+        details &&
+        details.id !== null &&
+        typeof details.id !== 'undefined' &&
+        String(details.id) !== ''
+      ) {
+        return 'rezka:' + String(details.id);
+      }
+
+      return movieFallbackKey();
+    }
+
+    function legacyPreferenceKeys() {
+      var keys = [];
+      var current = preferenceKey();
+
+      if (details && details.url) {
+        keys.push(String(details.url));
+      }
+
+      keys.push(movieFallbackKey());
+
+      return keys.filter(function (key, index, rows) {
+        return key && key !== current && rows.indexOf(key) === index;
+      });
+    }
+
+    function storedEntry(storageKey) {
+      var all = readJson(storageKey);
+      var key = preferenceKey();
+      var current = all[key];
+
+      if (!current) {
+        var legacy = legacyPreferenceKeys();
+
+        for (var i = 0; i < legacy.length; i++) {
+          if (all[legacy[i]]) {
+            current = all[legacy[i]];
+            all[key] = current;
+            writeJson(storageKey, all);
+            break;
+          }
+        }
+      }
+
+      return {
+        key: key,
+        all: all,
+        current: current || {}
+      };
     }
 
 
@@ -1528,13 +1579,16 @@
       var key =
         preferenceKey();
 
-      var all =
-        readJson(
+      var stored =
+        storedEntry(
           STORAGE.progress
         );
 
+      var all =
+        stored.all;
+
       var current =
-        all[key] ||
+        stored.current ||
         {};
 
       var voice =
@@ -1564,6 +1618,11 @@
           0
         ) || 0;
 
+      if (voice) {
+        current.voice_id =
+          voice.id;
+      }
+
       current.voice =
         voice
           ? voice.name
@@ -1571,6 +1630,9 @@
               current.voice ||
               ''
             );
+
+      current.balancer =
+        'hdrezka_premium';
 
       current.time =
         time;
@@ -1707,25 +1769,48 @@
       return view;
     }
 
-    function findVoiceIndex(name) {
+    function findVoiceIndex(id, name) {
       if (
-        !name ||
         !details ||
         !details.voices
       ) {
         return -1;
       }
 
+      /* ID переводчика надёжнее имени и не ломается от изменения подписи. */
+      if (
+        id !== null &&
+        typeof id !== 'undefined' &&
+        String(id) !== ''
+      ) {
+        for (
+          var i = 0;
+          i < details.voices.length;
+          i++
+        ) {
+          if (
+            details.voices[i] &&
+            String(details.voices[i].id) === String(id)
+          ) {
+            return i;
+          }
+        }
+      }
+
+      if (!name) {
+        return -1;
+      }
+
       for (
-        var i = 0;
-        i < details.voices.length;
-        i++
+        var j = 0;
+        j < details.voices.length;
+        j++
       ) {
         if (
-          details.voices[i] &&
-          details.voices[i].name === name
+          details.voices[j] &&
+          details.voices[j].name === name
         ) {
-          return i;
+          return j;
         }
       }
 
@@ -1761,25 +1846,22 @@
     }
 
     function savedState() {
-      var key =
-        preferenceKey();
-
       var preferences =
-        readJson(
+        storedEntry(
           STORAGE.preferences
         );
 
       var progress =
-        readJson(
+        storedEntry(
           STORAGE.progress
         );
 
       return {
         pref:
-          preferences[key] ||
+          preferences.current ||
           {},
         progress:
-          progress[key] ||
+          progress.current ||
           {}
       };
     }
@@ -1790,13 +1872,16 @@
       var key =
         preferenceKey();
 
-      var preferences =
-        readJson(
+      var stored =
+        storedEntry(
           STORAGE.preferences
         );
 
+      var preferences =
+        stored.all;
+
       var current =
-        preferences[key] ||
+        stored.current ||
         {};
 
       var voice =
@@ -1812,6 +1897,9 @@
         ) === '1' &&
         voice
       ) {
+        current.voice_id =
+          voice.id;
+
         current.voice =
           voice.name;
       }
@@ -1820,6 +1908,9 @@
         current.season =
           season.id;
       }
+
+      current.balancer =
+        'hdrezka_premium';
 
       current.updated =
         Date.now();
@@ -1841,13 +1932,16 @@
       var key =
         preferenceKey();
 
-      var progress =
-        readJson(
+      var stored =
+        storedEntry(
           STORAGE.progress
         );
 
+      var progress =
+        stored.all;
+
       var current =
-        progress[key] ||
+        stored.current ||
         {};
 
       var voice =
@@ -1856,6 +1950,11 @@
       var season =
         currentSeason();
 
+      if (voice) {
+        current.voice_id =
+          voice.id;
+      }
+
       current.voice =
         voice
           ? voice.name
@@ -1863,6 +1962,9 @@
               current.voice ||
               ''
             );
+
+      current.balancer =
+        'hdrezka_premium';
 
       current.updated =
         Date.now();
@@ -1908,24 +2010,45 @@
       var wantedSeason =
         null;
 
+      /*
+        Последний выбор фильтра важнее старого playback-progress.
+        progress остаётся fallback для старых сохранений и resume.
+      */
       if (
         setting(
           STORAGE.rememberVoice,
           '1'
         ) === '1'
       ) {
-        var voiceName =
+        var voiceId =
           (
+            state.pref &&
+            state.pref.voice_id
+          );
+
+        if (
+          voiceId === null ||
+          typeof voiceId === 'undefined' ||
+          String(voiceId) === ''
+        ) {
+          voiceId =
             state.progress &&
-            state.progress.voice
-          ) ||
+            state.progress.voice_id;
+        }
+
+        var voiceName =
           (
             state.pref &&
             state.pref.voice
+          ) ||
+          (
+            state.progress &&
+            state.progress.voice
           );
 
         var voiceIndex =
           findVoiceIndex(
+            voiceId,
             voiceName
           );
 
@@ -1937,29 +2060,25 @@
         }
       }
 
+      wantedSeason =
+        (
+          state.pref &&
+          state.pref.season
+        );
+
       if (
+        (
+          wantedSeason === null ||
+          typeof wantedSeason === 'undefined'
+        ) &&
         setting(
           STORAGE.continueMode,
           '1'
         ) === '1'
       ) {
         wantedSeason =
-          (
-            state.progress &&
-            state.progress.season
-          );
-      }
-
-      if (
-        wantedSeason === null ||
-        typeof wantedSeason ===
-          'undefined'
-      ) {
-        wantedSeason =
-          (
-            state.pref &&
-            state.pref.season
-          );
+          state.progress &&
+          state.progress.season;
       }
 
       return wantedSeason;
@@ -2003,6 +2122,9 @@
       applySeason(
         wantedSeason
       );
+
+      /* Нормализуем/мигрируем сохранение сразу после успешного восстановления. */
+      savePreference();
 
       self.renderFilter();
       self.renderItems();
@@ -2209,17 +2331,27 @@
             a.stype ===
             'voice'
           ) {
+            var previousSeason =
+              currentSeason();
+
+            var wantedSeason =
+              previousSeason
+                ? previousSeason.id
+                : null;
+
             choice.voice =
               b.index;
 
-            choice.season = 0;
+            /* Сразу фиксируем новую озвучку и не теряем выбранный сезон. */
+            savePreference();
 
             if (
               details &&
               details.is_series
             ) {
               self.loadEpisodes(
-                currentVoice()
+                currentVoice(),
+                wantedSeason
               );
             }
             else {
@@ -2774,11 +2906,9 @@
               );
 
             var progress =
-              readJson(
+              storedEntry(
                 STORAGE.progress
-              )[
-                preferenceKey()
-              ] || {};
+              ).current || {};
 
             var isContinue =
               details.is_series &&
@@ -3305,12 +3435,16 @@
 
   function init() {
     try {
-      /* Старые v1-v7 session-токены несовместимы с зашифрованной v8-сессией. */
-      if (value(STORAGE.sessionVersion) !== VERSION) {
+      /*
+        Старые v1-v7 токены несовместимы с v8, но патч-релизы v8 совместимы.
+        Обновление 8.0.0 -> 8.0.1 не должно выбрасывать пользователя из аккаунта.
+      */
+      var sessionVersion = value(STORAGE.sessionVersion);
+      if (sessionVersion && sessionVersion.indexOf('8.') !== 0) {
         setValue(STORAGE.session, '');
         setValue(STORAGE.host, '');
-        setValue(STORAGE.sessionVersion, VERSION);
       }
+      setValue(STORAGE.sessionVersion, VERSION);
 
       addSettings();
       installProgressSafety();

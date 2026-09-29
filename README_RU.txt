@@ -1,4 +1,4 @@
-HDREZKA Premium • DENYS EDITION v8.0
+HDREZKA Premium • DENYS EDITION v8.0.1
 ====================================
 
 ЭТА ВЕРСИЯ СОБРАНА ОТ РАБОЧЕЙ v2.1, А НЕ ОТ v6/v7.
@@ -103,7 +103,18 @@ HDREZKA    REZKA ✓
 - передаются is_camrip / is_ads / is_director / favs;
 - payload декодируется hdrezka 5.2.0 только на уровне URLs, без Post parser.
 
-5. ТАЙМКОД И ПЛЕЙЛИСТ
+5. СОХРАНЕНИЕ ВЫБОРА v8.0.1
+--------------------------
+- озвучка сохраняется по translator id + имени (имя остаётся fallback);
+- сезон сохраняется отдельно для конкретной карточки Rezka;
+- ключ состояния основан на стабильном Rezka post id, а не на зеркале/URL;
+- старые сохранения по URL автоматически мигрируют при первом открытии;
+- последний выбор фильтра имеет приоритет над более старым playback-progress;
+- при смене озвучки текущий сезон больше не сбрасывается на первый;
+- балансер HDREZKA Premium фиксируется в состоянии;
+- обновление 8.0.0 -> 8.0.1 сохраняет текущую v8-сессию входа.
+
+6. ТАЙМКОД И ПЛЕЙЛИСТ
 ---------------------
 Самодельные video.currentTime polling-хуки v3/v4 удалены.
 
@@ -132,7 +143,7 @@ HDREZKA    REZKA ✓
 4. Дождаться Render -> Live.
 5. В вашей обычной Lampa удалить старые тестовые DENYS URL и добавить только:
 
-https://hdrezka-premium-lampa.onrender.com/plugin.js?v=80
+https://hdrezka-premium-lampa.onrender.com/plugin.js?v=801
 
 6. Полностью закрыть Media Station X / Lampa и открыть снова.
 
@@ -146,7 +157,7 @@ https://hdrezka-premium-lampa.onrender.com/plugin.js?v=80
 https://hdrezka-premium-lampa.onrender.com/health
 
 Должно быть:
-version = 8.0.0
+version = 8.0.1
 anubis_solver = true
 tv_transport = jsonp-script
 

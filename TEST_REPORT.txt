@@ -1,4 +1,4 @@
-HDREZKA DENYS v8.0 local validation
+HDREZKA DENYS v8.0.1 local validation
 ===================================
 Python syntax: OK
 JavaScript syntax: OK
@@ -17,3 +17,11 @@ plugin.js API substitution: OK
 Native Timeline marker: OK
 Internal Lampa player marker: OK
 Lazy full playlist marker: OK
+
+State persistence v8.0.1:
+- stable Rezka post-id key: OK
+- legacy URL/title key migration: OK (static validation)
+- translator id + name persistence: OK
+- preference-first restore: OK
+- season preserved across voice switch: OK
+- v8 session preserved across patch update: OK
