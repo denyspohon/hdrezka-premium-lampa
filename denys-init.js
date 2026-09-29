@@ -1,8 +1,8 @@
 (function () {
   'use strict';
 
-  if (window.hdrezka_denys_bootstrap_v5) return;
-  window.hdrezka_denys_bootstrap_v5 = true;
+  if (window.hdrezka_denys_bootstrap_v802) return;
+  window.hdrezka_denys_bootstrap_v802 = true;
 
   var tries = 0;
 
@@ -17,7 +17,7 @@
     ) {
       if (
         !document.getElementById(
-          'hdrezka-denys-v5-script'
+          'hdrezka-denys-v802-script'
         )
       ) {
         var script =
@@ -26,13 +26,13 @@
           );
 
         script.id =
-          'hdrezka-denys-v5-script';
+          'hdrezka-denys-v802-script';
 
         script.type =
           'text/javascript';
 
         script.src =
-          '/plugin.js?v=51';
+          '/plugin.js?v=802';
 
         script.onerror =
           function () {

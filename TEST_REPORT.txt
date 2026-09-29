@@ -1,27 +1,24 @@
-HDREZKA DENYS v8.0.1 local validation
-===================================
-Python syntax: OK
-JavaScript syntax: OK
-Anubis challenge parser: OK
-Anubis SHA-256 PoW: OK
-Mock Anubis pass + retry: OK
-Search parser: OK
-Movie parser: OK
-Series parser: OK
-Episode parser: OK
-Encrypted session roundtrip: OK
-FastAPI health: OK
-JSONP pair/start: OK
-JSONP callback validation: OK
-plugin.js API substitution: OK
-Native Timeline marker: OK
-Internal Lampa player marker: OK
-Lazy full playlist marker: OK
+HDREZKA Premium for Lampa v8.0.2 — state persistence fix
 
-State persistence v8.0.1:
-- stable Rezka post-id key: OK
-- legacy URL/title key migration: OK (static validation)
-- translator id + name persistence: OK
-- preference-first restore: OK
-- season preserved across voice switch: OK
-- v8 session preserved across patch update: OK
+ROOT CAUSE
+- Lampa.Storage.get() automatically parses JSON objects from localStorage.
+- Old readJson() called value(), and value() wrapped that object in String(...).
+- Result became "[object Object]", JSON.parse failed, and preferences/progress were read as {}.
+- Therefore voice, season and episode/progress appeared to reset on every re-open/restart.
+
+FIXES
+1. readJson() now reads Lampa.Storage.get() directly and accepts already-parsed objects.
+2. writeJson() now writes native objects through Lampa.Storage.set(); localStorage fallback retained.
+3. Legacy JSON-string state remains readable.
+4. Last played episode is focused after reopening instead of forcing selector #1.
+5. Version/cache-bust updated to 8.0.2 / ?v=802.
+6. v8 session remains compatible; login/session keys are not reset.
+
+CHECKS
+- node --check plugin.js: PASS
+- python -m py_compile app.py: PASS
+- Lampa.Storage roundtrip mock: PASS
+- simulated full app restart: voice=77, season=4, episode=7 restored: PASS
+
+IMPORTANT FOR FIRST TEST
+After deploying v8.0.2, fully close/kill Lampa once and reopen it so the already-loaded v8.0.1 JavaScript is not kept in the current WebView. Then choose the desired voice/season/episode once; subsequent closes/restarts should restore them.

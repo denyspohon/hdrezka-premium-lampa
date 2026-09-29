@@ -23,7 +23,7 @@ from hdrezka import HDRezkaClient
 from hdrezka.post.urls import urls_from_ajax_response
 
 
-APP_VERSION = "8.0.1"
+APP_VERSION = "8.0.2"
 AUTHOR = "DENYS"
 EDITION = "DENYS EDITION"
 STARTED_AT = time.time()
@@ -1361,7 +1361,7 @@ async def root(request: Request):
         "author": AUTHOR,
         "edition": EDITION,
         "architecture": "v2 PC baseline + Anubis backend + JSONP MSX transport",
-        "plugin": base + "/plugin.js?v=801",
+        "plugin": base + "/plugin.js?v=802",
         "connect": base + "/connect",
         "uptime_seconds": int(time.time() - STARTED_AT),
     }

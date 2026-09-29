@@ -5,7 +5,7 @@
   window.hdrezka_premium_lampa_ready = true;
 
   var API = '__API_BASE__';
-  var VERSION = '8.0.1';
+  var VERSION = '8.0.2';
   var AUTHOR = 'DENYS';
   var EDITION = 'DENYS EDITION';
   var COMPONENT = 'hdrezka_premium';
@@ -45,12 +45,29 @@
   }
 
   function readJson(key) {
-    var raw = value(key);
+    /*
+      ВАЖНО: Lampa.Storage.get() уже сам JSON.parse-ит значения, которые
+      начинаются с { или [. Нельзя прогонять результат через value(), потому
+      что value() делает String(object) => "[object Object]" и сохранение
+      превращается в пустой объект при каждом следующем чтении.
+    */
+    var raw = '';
+
+    try {
+      raw = Lampa.Storage.get(key, '');
+    } catch (e) {}
 
     if (!raw) return {};
 
+    if (
+      typeof raw === 'object' &&
+      raw !== null
+    ) {
+      return raw;
+    }
+
     try {
-      var parsed = JSON.parse(raw);
+      var parsed = JSON.parse(String(raw));
       return parsed && typeof parsed === 'object' ? parsed : {};
     } catch (e) {
       return {};
@@ -58,12 +75,23 @@
   }
 
   function writeJson(key, data) {
+    var payload =
+      data && typeof data === 'object'
+        ? data
+        : {};
+
     try {
-      setValue(
-        key,
-        JSON.stringify(data || {})
-      );
-    } catch (e) {}
+      /* Lampa.Storage.set умеет хранить объект и сам сериализует его в localStorage. */
+      Lampa.Storage.set(key, payload);
+    } catch (e) {
+      /* Fallback для старых/нестандартных сборок Lampa. */
+      try {
+        window.localStorage.setItem(
+          key,
+          JSON.stringify(payload)
+        );
+      } catch (ignore) {}
+    }
   }
 
   function setting(key, fallback) {
@@ -1065,7 +1093,7 @@
           'Продолжать с последнего сезона',
 
         description:
-          'Помечает последнюю запущенную серию и возвращает к её сезону'
+          'Возвращает к последнему сезону и последней запущенной серии'
       }
     });
 
@@ -2840,6 +2868,7 @@
           currentSeason();
 
         var items = [];
+        var resumeTarget = null;
 
         if (
           details.is_series
@@ -3015,6 +3044,15 @@
               );
 
             /*
+              При повторном входе курсор должен возвращаться не на E1,
+              а на последнюю реально запущенную серию. Иначе визуально
+              кажется, что серия снова сбросилась, даже если progress сохранён.
+            */
+            if (isContinue) {
+              resumeTarget = item[0];
+            }
+
+            /*
               Нативный прогресс Lampa:
               полоска, процент, таймкод и автоматическое
               сохранение/восстановление позиции.
@@ -3095,7 +3133,15 @@
         );
 
         this.activity.loader(false);
-        this.start(true);
+
+        last =
+          resumeTarget ||
+          scroll
+            .render()
+            .find('.selector')
+            .eq(0)[0];
+
+        this.start(false);
       };
 
     this.reset = function () {

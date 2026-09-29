@@ -1,4 +1,4 @@
-HDREZKA Premium • DENYS EDITION v8.0.1
+HDREZKA Premium • DENYS EDITION v8.0.2
 ====================================
 
 ЭТА ВЕРСИЯ СОБРАНА ОТ РАБОЧЕЙ v2.1, А НЕ ОТ v6/v7.
@@ -103,7 +103,7 @@ HDREZKA    REZKA ✓
 - передаются is_camrip / is_ads / is_director / favs;
 - payload декодируется hdrezka 5.2.0 только на уровне URLs, без Post parser.
 
-5. СОХРАНЕНИЕ ВЫБОРА v8.0.1
+5. СОХРАНЕНИЕ ВЫБОРА v8.0.2
 --------------------------
 - озвучка сохраняется по translator id + имени (имя остаётся fallback);
 - сезон сохраняется отдельно для конкретной карточки Rezka;
@@ -112,7 +112,7 @@ HDREZKA    REZKA ✓
 - последний выбор фильтра имеет приоритет над более старым playback-progress;
 - при смене озвучки текущий сезон больше не сбрасывается на первый;
 - балансер HDREZKA Premium фиксируется в состоянии;
-- обновление 8.0.0 -> 8.0.1 сохраняет текущую v8-сессию входа.
+- обновление 8.0.0 -> 8.0.2 сохраняет текущую v8-сессию входа.
 
 6. ТАЙМКОД И ПЛЕЙЛИСТ
 ---------------------
@@ -143,7 +143,7 @@ HDREZKA    REZKA ✓
 4. Дождаться Render -> Live.
 5. В вашей обычной Lampa удалить старые тестовые DENYS URL и добавить только:
 
-https://hdrezka-premium-lampa.onrender.com/plugin.js?v=801
+https://hdrezka-premium-lampa.onrender.com/plugin.js?v=802
 
 6. Полностью закрыть Media Station X / Lampa и открыть снова.
 
@@ -157,7 +157,7 @@ https://hdrezka-premium-lampa.onrender.com/plugin.js?v=801
 https://hdrezka-premium-lampa.onrender.com/health
 
 Должно быть:
-version = 8.0.1
+version = 8.0.2
 anubis_solver = true
 tv_transport = jsonp-script
 
@@ -209,3 +209,11 @@ MAX или нужный предел
 «гарантированно проверенным на вашем аккаунте» до первого Render deploy.
 Но в отличие от предыдущих попыток, две известные причины уже закрыты кодом:
 Anubis на Rezka и XHR/CORS Media Station X.
+
+
+FIX v8.0.2 — СОХРАНЕНИЕ СОСТОЯНИЯ
+----------------------------------
+Исправлена корневая ошибка чтения Lampa.Storage: JSON-объекты больше не
+превращаются в строку "[object Object]". Озвучка, сезон, последняя серия и
+resume-прогресс теперь читаются из того же постоянного localStorage, куда
+они были записаны.
